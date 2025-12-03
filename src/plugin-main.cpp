@@ -337,6 +337,25 @@ struct ProfanityFilter {
         uint64_t total_samples_popped_16k = 0;
         uint64_t last_reset_sample_16k = 0;
         
+        // Fix: Calculate initial time offset to sync with existing audio stream
+        // If we are restarting the filter (e.g. settings change), the audio stream
+        // might have been running for a long time. We need to align our 0 time.
+        uint64_t start_offset_48k = 0;
+        if (!channels.empty()) {
+            uint64_t tw = channels[0].total_written;
+            size_t q_size;
+            {
+                lock_guard<mutex> lock(queue_mutex);
+                q_size = asr_queue.size();
+            }
+            // The front of the queue corresponds to (Now - QueueDuration)
+            // QueueDuration = q_size * 3 (approx)
+            uint64_t backlog_48k = q_size * 3;
+            if (tw > backlog_48k) {
+                start_offset_48k = tw - backlog_48k;
+            }
+        }
+
         while (running) {
             vector<float> chunk;
             {
@@ -459,8 +478,9 @@ struct ProfanityFilter {
                                     
                                     // Convert to 48k (OBS)
                                     // We assume strict 3x ratio for simplicity (16k -> 48k)
-                                    uint64_t start_abs = start_16k * 3;
-                                    uint64_t end_abs = end_16k * 3;
+                                    // And add the initial offset
+                                    uint64_t start_abs = (start_16k * 3) + start_offset_48k;
+                                    uint64_t end_abs = (end_16k * 3) + start_offset_48k;
                                     
                                     // Apply padding (at 48k)
                                     start_abs = (start_abs > 2400) ? start_abs - 2400 : 0; 
@@ -519,7 +539,7 @@ static void *create(obs_data_t *settings, obs_source_t *context)
     filter->settings = settings;
     obs_data_addref(settings);
     
-    filter->InitializeASR(model_path);
+    filter->InitializeASR(model_path ? model_path : "");
     filter->delay_seconds = (float)obs_data_get_double(settings, "delay_ms") / 1000.0f;
     if (filter->delay_seconds < 0.1f) filter->delay_seconds = 0.1f;
     
@@ -545,10 +565,11 @@ static void update(void *data, obs_data_t *settings)
     filter->enabled = obs_data_get_bool(settings, "enabled");
 
     const char *path = obs_data_get_string(settings, "model_path");
-    if (filter->model_dir != path) {
+    string safe_path = path ? path : "";
+    if (filter->model_dir != safe_path) {
         // Safely re-initialize
         filter->Stop();
-        filter->InitializeASR(path);
+        filter->InitializeASR(safe_path);
         filter->Start();
     }
     
