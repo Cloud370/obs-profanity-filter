@@ -1,6 +1,3 @@
-[submodule "thirdparty/sherpa-onnx"]
-	path = thirdparty/sherpa-onnx
-	url = https://github.com/k2-fsa/sherpa-onnx.git
 [submodule "thirdparty/cpp-pinyin"]
 	path = thirdparty/cpp-pinyin
 	url = https://github.com/wolfgitpr/cpp-pinyin.git
