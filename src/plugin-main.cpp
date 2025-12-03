@@ -19,6 +19,7 @@
 #include <ctime>
 #include <set>
 
+#include <map>
 #include <windows.h>
 
 using namespace std;
@@ -27,6 +28,129 @@ OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-profanity-filter", "en-US")
 
 #define BLOG(level, format, ...) blog(level, "[Profanity Filter] " format, ##__VA_ARGS__)
+
+// --- Shared Model Management ---
+
+struct ASRModel {
+    const SherpaOnnxOnlineRecognizer *recognizer = nullptr;
+    string model_path;
+    
+    ASRModel(const string& path, string& error_msg) : model_path(path) {
+        SherpaOnnxOnlineRecognizerConfig config;
+        memset(&config, 0, sizeof(config));
+        
+        config.feat_config.sample_rate = 16000;
+        config.feat_config.feature_dim = 80;
+        
+        string tokens = model_path + "/tokens.txt";
+        string encoder = model_path + "/encoder-epoch-99-avg-1.onnx";
+        
+        // Check files existence
+        FILE *f = fopen(tokens.c_str(), "r");
+        if (!f) {
+             error_msg = "文件缺失: tokens.txt";
+             return;
+        }
+        fclose(f);
+
+        f = fopen(encoder.c_str(), "r");
+        if (f) { fclose(f); } else { 
+            encoder = model_path + "/encoder.onnx"; 
+            f = fopen(encoder.c_str(), "r");
+            if (!f) {
+                error_msg = "文件缺失: encoder.onnx (或 epoch-99)";
+                return;
+            }
+            fclose(f);
+        }
+        
+        string decoder = model_path + "/decoder-epoch-99-avg-1.onnx";
+        f = fopen(decoder.c_str(), "r");
+        if (f) { fclose(f); } else { 
+            decoder = model_path + "/decoder.onnx"; 
+            f = fopen(decoder.c_str(), "r");
+            if (!f) {
+                error_msg = "文件缺失: decoder.onnx (或 epoch-99)";
+                return;
+            }
+            fclose(f);
+        }
+        
+        string joiner = model_path + "/joiner-epoch-99-avg-1.onnx";
+        f = fopen(joiner.c_str(), "r");
+        if (f) { fclose(f); } else { 
+            joiner = model_path + "/joiner.onnx"; 
+            f = fopen(joiner.c_str(), "r");
+            if (!f) {
+                error_msg = "文件缺失: joiner.onnx (或 epoch-99)";
+                return;
+            }
+            fclose(f);
+        }
+        
+        config.model_config.transducer.encoder = encoder.c_str();
+        config.model_config.transducer.decoder = decoder.c_str();
+        config.model_config.transducer.joiner = joiner.c_str();
+        config.model_config.tokens = tokens.c_str();
+        config.model_config.num_threads = 1;
+        config.model_config.provider = "cpu";
+        
+        config.decoding_method = "greedy_search";
+        config.max_active_paths = 4;
+        
+        recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
+        if (!recognizer) {
+            error_msg = "引擎创建失败 (内部错误)";
+        } else {
+            BLOG(LOG_INFO, "ASR Model Loaded: %s", model_path.c_str());
+        }
+    }
+    
+    ~ASRModel() {
+        if (recognizer) {
+            SherpaOnnxDestroyOnlineRecognizer(recognizer);
+            BLOG(LOG_INFO, "ASR Model Unloaded: %s", model_path.c_str());
+        }
+    }
+};
+
+class ModelManager {
+public:
+    static shared_ptr<ASRModel> Get(const string& path, string& error_out) {
+        lock_guard<mutex> lock(mutex_);
+        
+        // Check if already loaded
+        auto it = models_.find(path);
+        if (it != models_.end()) {
+            auto ptr = it->second.lock();
+            if (ptr) {
+                BLOG(LOG_INFO, "♻️ [ModelManager] Reuse existing model for: %s (Ref Count: %ld)", path.c_str(), ptr.use_count());
+                return ptr;
+            }
+            // Expired, remove
+            models_.erase(it);
+        }
+        
+        // Load new
+        BLOG(LOG_INFO, "🆕 [ModelManager] Loading NEW model for: %s", path.c_str());
+        auto ptr = make_shared<ASRModel>(path, error_out);
+        if (!ptr->recognizer) {
+            return nullptr; // Failed
+        }
+        
+        models_[path] = ptr;
+        return ptr;
+    }
+    
+private:
+    static std::map<string, weak_ptr<ASRModel>> models_;
+    static mutex mutex_;
+};
+
+std::map<string, weak_ptr<ASRModel>> ModelManager::models_;
+mutex ModelManager::mutex_;
+
+// --- Plugin Instance ---
 
 struct ProfanityFilter {
     obs_source_t *context;
@@ -50,7 +174,7 @@ struct ProfanityFilter {
     mutex history_mutex;
 
     // State
-    const SherpaOnnxOnlineRecognizer *recognizer = nullptr;
+    shared_ptr<ASRModel> asr_model; // Shared model instance
     const SherpaOnnxOnlineStream *stream = nullptr;
     
     // Audio Buffer (Circular Buffer per channel)
@@ -98,8 +222,14 @@ struct ProfanityFilter {
         Stop();
         if (settings) obs_data_release(settings);
         if (show_console) ToggleConsole(false);
-        if (stream) SherpaOnnxDestroyOnlineStream(stream);
-        if (recognizer) SherpaOnnxDestroyOnlineRecognizer(recognizer);
+        
+        // Order matters: Stream depends on Recognizer (inside asr_model).
+        // We must destroy stream before releasing asr_model.
+        if (stream) {
+            SherpaOnnxDestroyOnlineStream(stream);
+            stream = nullptr;
+        }
+        asr_model.reset(); // Release shared model reference
     }
 
     void ToggleConsole(bool show) {
@@ -189,8 +319,8 @@ struct ProfanityFilter {
         auto tm = *localtime(&t);
         
         ss << "=== 实时状态 (更新时间: " << put_time(&tm, "%H:%M:%S") << ") ===" << endl;
-        if (recognizer) {
-             ss << "引擎状态: 🟢 运行中" << endl;
+        if (asr_model && asr_model->recognizer) {
+             ss << "引擎状态: 🟢 运行中 (" << asr_model->model_path << ")" << endl;
              ss << "当前音量: " << fixed << setprecision(4) << current_rms << endl;
         } else {
              ss << "引擎状态: 🔴 未初始化" << endl;
@@ -220,12 +350,12 @@ struct ProfanityFilter {
         lock_guard<mutex> lock(queue_mutex);
         model_dir = path;
         
-        if (recognizer) {
+        // Cleanup old stream/model
+        if (stream) {
             SherpaOnnxDestroyOnlineStream(stream);
-            SherpaOnnxDestroyOnlineRecognizer(recognizer);
-            recognizer = nullptr;
             stream = nullptr;
         }
+        asr_model.reset();
         
         initialization_error = "";
         
@@ -234,81 +364,16 @@ struct ProfanityFilter {
              return;
         }
         
-        SherpaOnnxOnlineRecognizerConfig config;
-        memset(&config, 0, sizeof(config));
+        // Use ModelManager to get shared instance
+        string err;
+        asr_model = ModelManager::Get(model_dir, err);
         
-        config.feat_config.sample_rate = 16000;
-        config.feat_config.feature_dim = 80;
-        
-        string tokens = model_dir + "/tokens.txt";
-        string encoder = model_dir + "/encoder-epoch-99-avg-1.onnx";
-        
-        // Check files existence
-        FILE *f = fopen(tokens.c_str(), "r");
-        if (!f) {
-             initialization_error = "文件缺失: tokens.txt";
-             LogToFile("错误: " + initialization_error);
-             return;
-        }
-        fclose(f);
-
-        f = fopen(encoder.c_str(), "r");
-        if (f) { fclose(f); } else { 
-            encoder = model_dir + "/encoder.onnx"; 
-            f = fopen(encoder.c_str(), "r");
-            if (!f) {
-                initialization_error = "文件缺失: encoder.onnx (或 epoch-99)";
-                LogToFile("错误: " + initialization_error);
-                return;
-            }
-            fclose(f);
-        }
-        
-        string decoder = model_dir + "/decoder-epoch-99-avg-1.onnx";
-        f = fopen(decoder.c_str(), "r");
-        if (f) { fclose(f); } else { 
-            decoder = model_dir + "/decoder.onnx"; 
-            f = fopen(decoder.c_str(), "r");
-            if (!f) {
-                initialization_error = "文件缺失: decoder.onnx (或 epoch-99)";
-                LogToFile("错误: " + initialization_error);
-                return;
-            }
-            fclose(f);
-        }
-        
-        string joiner = model_dir + "/joiner-epoch-99-avg-1.onnx";
-        f = fopen(joiner.c_str(), "r");
-        if (f) { fclose(f); } else { 
-            joiner = model_dir + "/joiner.onnx"; 
-            f = fopen(joiner.c_str(), "r");
-            if (!f) {
-                initialization_error = "文件缺失: joiner.onnx (或 epoch-99)";
-                LogToFile("错误: " + initialization_error);
-                return;
-            }
-            fclose(f);
-        }
-        
-        config.model_config.transducer.encoder = encoder.c_str();
-        config.model_config.transducer.decoder = decoder.c_str();
-        config.model_config.transducer.joiner = joiner.c_str();
-        config.model_config.tokens = tokens.c_str();
-        config.model_config.num_threads = 1;
-        config.model_config.provider = "cpu";
-        
-        config.decoding_method = "greedy_search";
-        config.max_active_paths = 4;
-        
-        recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
-        if (recognizer) {
-            stream = SherpaOnnxCreateOnlineStream(recognizer);
-            BLOG(LOG_INFO, "ASR Initialized: %s", model_dir.c_str());
-            LogToFile("引擎初始化成功: " + model_dir);
+        if (asr_model && asr_model->recognizer) {
+            stream = SherpaOnnxCreateOnlineStream(asr_model->recognizer);
+            LogToFile("引擎初始化成功 (共享实例)");
         } else {
-            BLOG(LOG_ERROR, "Failed to initialize ASR. Check paths.");
-            initialization_error = "引擎创建失败 (请检查日志)";
-            LogToFile("错误: 引擎创建失败");
+            initialization_error = err.empty() ? "引擎初始化失败" : err;
+            LogToFile("错误: " + initialization_error);
         }
     }
     
@@ -375,14 +440,14 @@ struct ProfanityFilter {
             
             total_samples_popped_16k += chunk.size();
             
-            if (recognizer && stream) {
+            if (asr_model && asr_model->recognizer && stream) {
                 SherpaOnnxOnlineStreamAcceptWaveform(stream, 16000, chunk.data(), (int32_t)chunk.size());
                 
-                while (SherpaOnnxIsOnlineStreamReady(recognizer, stream)) {
-                    SherpaOnnxDecodeOnlineStream(recognizer, stream);
+                while (SherpaOnnxIsOnlineStreamReady(asr_model->recognizer, stream)) {
+                    SherpaOnnxDecodeOnlineStream(asr_model->recognizer, stream);
                 }
                 
-                const SherpaOnnxOnlineRecognizerResult *result = SherpaOnnxGetOnlineStreamResult(recognizer, stream);
+                const SherpaOnnxOnlineRecognizerResult *result = SherpaOnnxGetOnlineStreamResult(asr_model->recognizer, stream);
                 if (result) {
                     if (result->count > 0 && result->tokens_arr && result->timestamps) {
                         string full_text = "";
@@ -423,23 +488,7 @@ struct ProfanityFilter {
                                 // Truncate text to fit one line to avoid scrolling spam
                                 string display_text = full_text;
                                 if (display_text.length() > 60) {
-                                    // Show last 60 chars
-                                    // Note: This might cut multi-byte characters incorrectly, 
-                                    // but for console preview it's acceptable or we can use a simpler limit.
-                                    // A safe way for UTF-8 is harder, let's just show the beginning if it's too long 
-                                    // OR just show "..." at start.
-                                    
-                                    // Simple byte truncation might result in garbage at the start, but it's just display.
-                                    size_t len = display_text.length();
-                                    size_t start = len - 60;
-                                    // Align to avoid breaking UTF-8? 
-                                    // Let's just hope for the best or iterate. 
-                                    // Actually, let's just show the *beginning* + "..." if it's long?
-                                    // No, user wants to see what is being said *now*.
-                                    
-                                    // Let's just use a safe approach:
-                                    // If we cut in the middle of a multibyte, it displays a box. Fine.
-                                    display_text = "..." + display_text.substr(start);
+                                    display_text = "..." + display_text.substr(display_text.length() - 60);
                                 }
                                 
                                 // Pad with spaces to overwrite previous content
@@ -501,11 +550,11 @@ struct ProfanityFilter {
                     SherpaOnnxDestroyOnlineRecognizerResult(result);
                 }
                 
-                if (SherpaOnnxOnlineStreamIsEndpoint(recognizer, stream)) {
+                if (SherpaOnnxOnlineStreamIsEndpoint(asr_model->recognizer, stream)) {
                     if (!last_log_text.empty()) {
                         LogToFile("识别片段: " + last_log_text);
                     }
-                    SherpaOnnxOnlineStreamReset(recognizer, stream);
+                    SherpaOnnxOnlineStreamReset(asr_model->recognizer, stream);
                     // The stream is reset. The NEXT sample fed will be t=0.
                     // So the "Last Reset" sample index becomes the current total samples fed.
                     last_reset_sample_16k = total_samples_popped_16k;
