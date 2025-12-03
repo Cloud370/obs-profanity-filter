@@ -36,10 +36,10 @@
             "bundleId": "com.example.plugintemplate-for-obs"
         }
     },
-    "name": "plugintemplate-for-obs",
-    "displayName": "Plugin Template for OBS",
-    "version": "1.0.0",
-    "author": "Your Name Here",
-    "website": "https://example.com",
-    "email": "me@example.com"
+    "name": "obs-profanity-filter",
+    "displayName": "OBS Profanity Filter",
+    "version": "0.0.1",
+    "author": "Developer",
+    "website": "https://github.com/your-repo/obs-profanity-filter",
+    "email": "dev@example.com"
 }

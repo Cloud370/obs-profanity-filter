@@ -15,6 +15,11 @@
 !CMakePresets.json
 !LICENSE
 !README.md
+!Make-Installer.ps1
+
+# Whitelist directories
+!/installer
+!/thirdparty
 
 # Exclude lock files
 *.lock.json

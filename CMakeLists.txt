@@ -55,6 +55,7 @@ message(STATUS "Sherpa ONNX Root: ${SHERPA_ONNX_ROOT}")
 
 # CPP-Pinyin Setup
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(CPP_PINYIN_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(thirdparty/cpp-pinyin)
 if(MSVC)
     target_compile_options(cpp-pinyin PRIVATE /wd4251 /wd4267)
@@ -90,4 +91,25 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/cpp-pinyin/res/dict"
     "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/dict"
+)
+
+# Install dependencies
+install(FILES
+    "${SHERPA_ONNX_ROOT}/bin/onnxruntime.dll"
+    "${SHERPA_ONNX_ROOT}/bin/onnxruntime_providers_shared.dll"
+    "${SHERPA_ONNX_ROOT}/lib/sherpa-onnx-c-api.dll"
+    DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit"
+)
+
+install(
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/cpp-pinyin/res/dict"
+    DESTINATION "${CMAKE_PROJECT_NAME}/data"
+)
+
+# InnoSetup Installer Configuration
+set(UUID_APP "530C2670-1206-4349-9014-550806860710")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/installer/installer.iss.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/installer.iss"
+    @ONLY
 )

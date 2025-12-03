@@ -102,6 +102,14 @@
 4.  **安装**:
     编译完成后，生成的 DLL 文件位于 `build/Release/`。将它们复制到 OBS 插件目录进行测试。
 
+5.  **制作安装包 (可选)**:
+    如果您想生成 Windows 安装程序 (`.exe`)，请运行项目根目录下的 PowerShell 脚本：
+    ```powershell
+    .\Make-Installer.ps1
+    ```
+    该脚本会自动检测环境、编译 Release 版本并生成 InnoSetup 安装包。
+    *需预先安装 [Inno Setup 6](https://jrsoftware.org/isdl.php)*
+
 ---
 
 ## 🧩 技术原理

@@ -522,7 +522,7 @@ struct ProfanityFilter {
                                     bfree(obs_data_ptr);
                                 }
                                 
-                                // Method 2: Try next to DLL (Portable / Dev)
+                                // Method 2: Try next to DLL (Portable / Dev) or Self-contained bundle
                                  if (dict_path.empty()) {
                                      HMODULE hMod = nullptr;
                                      MEMORY_BASIC_INFORMATION mbi;
@@ -534,9 +534,19 @@ struct ProfanityFilter {
                                          char path[MAX_PATH];
                                          if (GetModuleFileNameA(hMod, path, MAX_PATH)) {
                                              filesystem::path p(path);
-                                             p = p.parent_path() / "dict";
-                                             if (filesystem::exists(p)) {
-                                                 dict_path = p.string();
+                                             
+                                             // 1. Check next to DLL (e.g. local build: bin/64bit/dict)
+                                             filesystem::path p_next = p.parent_path() / "dict";
+                                             if (filesystem::exists(p_next)) {
+                                                 dict_path = p_next.string();
+                                             } else {
+                                                 // 2. Check standard plugin structure (root/data/dict)
+                                                 // DLL: root/bin/64bit/plugin.dll
+                                                 // Dict: root/data/dict
+                                                 filesystem::path p_bundle = p.parent_path().parent_path().parent_path() / "data" / "dict";
+                                                 if (filesystem::exists(p_bundle)) {
+                                                     dict_path = p_bundle.string();
+                                                 }
                                              }
                                          }
                                      }
