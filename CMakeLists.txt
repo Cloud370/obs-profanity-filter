@@ -4,8 +4,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
-option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
-option(ENABLE_QT "Use Qt functionality" OFF)
+option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
+option(ENABLE_QT "Use Qt functionality" ON)
 
 include(compilerconfig)
 include(defaults)
@@ -28,6 +28,12 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
+  
+  # Force link to the library we know exists (Fallback for local builds)
+  set(OBS_FRONTEND_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.deps/lib/obs-frontend-api.lib")
+  if(EXISTS "${OBS_FRONTEND_LIB_PATH}")
+      target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE "${OBS_FRONTEND_LIB_PATH}")
+  endif()
 endif()
 
 if(ENABLE_QT)
@@ -59,7 +65,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE sherpa-onnx-c-api)
 
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_20)
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp src/plugin-config.cpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
