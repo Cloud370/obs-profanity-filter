@@ -568,6 +568,7 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
     string global_model;
     bool global_mute;
     int global_freq;
+    int global_mix;
     
     {
         lock_guard<mutex> lock(cfg->mutex);
@@ -575,6 +576,7 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
         global_model = cfg->model_path;
         global_mute = cfg->mute_mode;
         global_freq = cfg->beep_frequency;
+        global_mix = cfg->beep_mix_percent;
     }
     
     // Update Filter State
@@ -666,7 +668,10 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
                         float t = (float)s / 48000.0f;
                         val = 0.1f * sinf(2.0f * 3.14159f * (float)global_freq * t);
                      }
-                     ch.buffer[idx] = val;
+                     
+                     float mix = (float)global_mix / 100.0f;
+                     float original = ch.buffer[idx];
+                     ch.buffer[idx] = (val * mix) + (original * (1.0f - mix));
                  }
              }
 

@@ -33,6 +33,7 @@ struct GlobalConfig {
     std::string dirty_words_str; // Comma separated
     bool mute_mode = false;
     int beep_frequency = 1000;
+    int beep_mix_percent = 100;
     bool show_console = false;
     std::string debug_log_path;
     
@@ -68,6 +69,7 @@ private:
     QTextEdit *editDirtyWords; // Use TextEdit for multiline
     QCheckBox *chkMuteMode;
     QSpinBox *spinBeepFreq;
+    QSpinBox *spinBeepMix;
     QCheckBox *chkShowConsole;
     QLineEdit *editLogPath;
 };

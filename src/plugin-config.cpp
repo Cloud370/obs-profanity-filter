@@ -51,6 +51,7 @@ void GlobalConfig::Save() {
         obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
         obs_data_set_bool(data, "mute_mode", mute_mode);
         obs_data_set_int(data, "beep_freq", beep_frequency);
+        obs_data_set_int(data, "beep_mix", beep_mix_percent);
         obs_data_set_bool(data, "show_console", show_console);
         obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
         
@@ -112,6 +113,13 @@ void GlobalConfig::Load() {
         mute_mode = obs_data_get_bool(data, "mute_mode");
         beep_frequency = obs_data_get_int(data, "beep_freq");
         if (beep_frequency < 200) beep_frequency = 1000;
+
+        if (obs_data_has_user_value(data, "beep_mix")) {
+            beep_mix_percent = obs_data_get_int(data, "beep_mix");
+            if (beep_mix_percent < 0 || beep_mix_percent > 100) beep_mix_percent = 100;
+        } else {
+            beep_mix_percent = 100;
+        }
         
         show_console = obs_data_get_bool(data, "show_console");
         
@@ -165,10 +173,16 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     spinBeepFreq->setRange(200, 5000);
     spinBeepFreq->setSingleStep(100);
     spinBeepFreq->setSuffix(" Hz");
+
+    spinBeepMix = new QSpinBox();
+    spinBeepMix->setRange(0, 100);
+    spinBeepMix->setSingleStep(5);
+    spinBeepMix->setSuffix(" %");
     
     layoutAudio->addRow("全局延迟时间:", spinDelay);
     layoutAudio->addRow("", chkMuteMode);
     layoutAudio->addRow("哔声频率:", spinBeepFreq);
+    layoutAudio->addRow("哔声/静音混合比例:", spinBeepMix);
     mainLayout->addWidget(grpAudio);
     
     // Words Group
@@ -224,6 +238,7 @@ void ConfigDialog::LoadToUI() {
     editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
     chkMuteMode->setChecked(cfg->mute_mode);
     spinBeepFreq->setValue(cfg->beep_frequency);
+    spinBeepMix->setValue(cfg->beep_mix_percent);
     chkShowConsole->setChecked(cfg->show_console);
     editLogPath->setText(QString::fromStdString(cfg->debug_log_path));
 }
@@ -252,6 +267,7 @@ void ConfigDialog::onSave() {
         cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
         cfg->mute_mode = chkMuteMode->isChecked();
         cfg->beep_frequency = spinBeepFreq->value();
+        cfg->beep_mix_percent = spinBeepMix->value();
         cfg->show_console = chkShowConsole->isChecked();
         cfg->debug_log_path = editLogPath->text().toStdString();
     }
