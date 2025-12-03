@@ -94,7 +94,7 @@ void GlobalConfig::Load() {
     
     if (path.empty() || !filesystem::exists(path)) {
         // Fallback defaults
-        dirty_words_str = "fuck, shit, bitch, 卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
+        dirty_words_str = "卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
         ParsePatterns();
         return;
     }
@@ -106,10 +106,10 @@ void GlobalConfig::Load() {
         model_path = s ? s : "";
         
         delay_seconds = obs_data_get_double(data, "delay_seconds");
-        if (delay_seconds < 0.1) delay_seconds = 1.5;
+        if (delay_seconds < 0.1) delay_seconds = 1.0;
         
         s = obs_data_get_string(data, "dirty_words");
-        dirty_words_str = s ? s : "fuck, shit, bitch, 卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
+        dirty_words_str = s ? s : "卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
         
         use_pinyin = obs_data_get_bool(data, "use_pinyin");
 

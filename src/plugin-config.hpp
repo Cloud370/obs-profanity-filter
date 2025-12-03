@@ -29,7 +29,7 @@ struct GlobalConfig {
     
     // Settings
     std::string model_path;
-    double delay_seconds = 1.5;
+    double delay_seconds = 1.0;
     std::string dirty_words_str; // Comma separated
     bool mute_mode = false;
     int beep_frequency = 1000;
