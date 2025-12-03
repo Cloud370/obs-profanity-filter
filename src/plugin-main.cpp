@@ -250,6 +250,12 @@ struct ProfanityFilter {
     }
 
     void LogToFile(const string& message) {
+        // Truncate overly long messages to protect memory
+        string safe_message = message;
+        if (safe_message.length() > 1000) {
+            safe_message = safe_message.substr(0, 1000) + "...(truncated)";
+        }
+
         GlobalConfig *cfg = GetGlobalConfig();
         bool show_console;
         string debug_log_path;
@@ -264,14 +270,14 @@ struct ProfanityFilter {
             auto t = time(nullptr);
             auto tm = *localtime(&t);
             stringstream ss;
-            ss << put_time(&tm, "[%H:%M:%S] ") << message;
+            ss << put_time(&tm, "[%H:%M:%S] ") << safe_message;
             
             log_history.push_front(ss.str());
-            if (log_history.size() > 100) log_history.pop_back();
+            if (log_history.size() > 50) log_history.pop_back();
             
             if (show_console) {
                 cout << "\r                                                                                \r";
-                cout << put_time(&tm, "[%H:%M:%S] ") << message << endl;
+                cout << put_time(&tm, "[%H:%M:%S] ") << safe_message << endl;
             }
         }
 
@@ -282,7 +288,7 @@ struct ProfanityFilter {
             if (outfile.is_open()) {
                 auto t = time(nullptr);
                 auto tm = *localtime(&t);
-                outfile << put_time(&tm, "[%Y-%m-%d %H:%M:%S] ") << message << endl;
+                outfile << put_time(&tm, "[%Y-%m-%d %H:%M:%S] ") << safe_message << endl;
             }
         } catch (...) {}
     }
@@ -685,7 +691,13 @@ struct ProfanityFilter {
                     SherpaOnnxDestroyOnlineRecognizerResult(result);
                 }
                 
-                if (SherpaOnnxOnlineStreamIsEndpoint(asr_model->recognizer, stream)) {
+                // Check endpoint or force reset if segment is too long (> 60s)
+                bool force_reset = (total_samples_popped_16k - last_reset_sample_16k) > (16000 * 60);
+
+                if (force_reset || SherpaOnnxOnlineStreamIsEndpoint(asr_model->recognizer, stream)) {
+                    if (force_reset) {
+                        LogToFile("Warning: Forced reset of ASR stream (segment > 60s)");
+                    }
                     SherpaOnnxOnlineStreamReset(asr_model->recognizer, stream);
                     last_reset_sample_16k = total_samples_popped_16k;
                     {
@@ -800,6 +812,14 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
 
     if (filter->enabled && !filter->target_model_path.empty()) {
         lock_guard<mutex> lock(filter->queue_mutex);
+
+        // Safety: Limit queue size to prevent memory leak if ASR is too slow
+        // Limit to ~60 seconds of audio (16000 * 60 = 960,000 samples)
+        if (filter->asr_queue.size() > 960000) {
+            filter->asr_queue.clear();
+            // Note: We cannot safely log from audio thread usually, but this is a critical fallback
+        }
+
         for (size_t i = 0; i < frames; i += 3) {
              if (i + 2 < frames) {
                  float val = (input[i] + input[i+1] + input[i+2]) / 3.0f;
