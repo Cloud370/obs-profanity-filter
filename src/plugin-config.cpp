@@ -49,6 +49,7 @@ void GlobalConfig::Save() {
         obs_data_set_string(data, "model_path", model_path.c_str());
         obs_data_set_double(data, "delay_seconds", delay_seconds);
         obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
+        obs_data_set_bool(data, "use_pinyin", use_pinyin);
         obs_data_set_bool(data, "mute_mode", mute_mode);
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
@@ -110,6 +111,8 @@ void GlobalConfig::Load() {
         s = obs_data_get_string(data, "dirty_words");
         dirty_words_str = s ? s : "fuck, shit, bitch, 卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
         
+        use_pinyin = obs_data_get_bool(data, "use_pinyin");
+
         mute_mode = obs_data_get_bool(data, "mute_mode");
         beep_frequency = obs_data_get_int(data, "beep_freq");
         if (beep_frequency < 200) beep_frequency = 1000;
@@ -192,6 +195,11 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     layoutWords->addWidget(new QLabel("屏蔽词列表 (逗号分隔):"));
     editDirtyWords = new QTextEdit();
     layoutWords->addWidget(editDirtyWords);
+    
+    chkUsePinyin = new QCheckBox("启用拼音增强识别 (模糊匹配)");
+    chkUsePinyin->setToolTip("开启后将使用拼音进行匹配，忽略声调和平卷舌差异，提高识别率。");
+    layoutWords->addWidget(chkUsePinyin);
+
     mainLayout->addWidget(grpWords);
     
     // Debug Group
@@ -236,6 +244,7 @@ void ConfigDialog::LoadToUI() {
     editModelPath->setText(QString::fromStdString(cfg->model_path));
     spinDelay->setValue(cfg->delay_seconds);
     editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
+    chkUsePinyin->setChecked(cfg->use_pinyin);
     chkMuteMode->setChecked(cfg->mute_mode);
     spinBeepFreq->setValue(cfg->beep_frequency);
     spinBeepMix->setValue(cfg->beep_mix_percent);
@@ -265,6 +274,7 @@ void ConfigDialog::onSave() {
         cfg->model_path = editModelPath->text().toStdString();
         cfg->delay_seconds = spinDelay->value();
         cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
+        cfg->use_pinyin = chkUsePinyin->isChecked();
         cfg->mute_mode = chkMuteMode->isChecked();
         cfg->beep_frequency = spinBeepFreq->value();
         cfg->beep_mix_percent = spinBeepMix->value();

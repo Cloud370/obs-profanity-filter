@@ -53,6 +53,13 @@ endif()
 set(SHERPA_ONNX_ROOT "${sherpa_onnx_SOURCE_DIR}")
 message(STATUS "Sherpa ONNX Root: ${SHERPA_ONNX_ROOT}")
 
+# CPP-Pinyin Setup
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+add_subdirectory(thirdparty/cpp-pinyin)
+if(MSVC)
+    target_compile_options(cpp-pinyin PRIVATE /wd4251 /wd4267)
+endif()
+
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${SHERPA_ONNX_ROOT}/include")
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE "${SHERPA_ONNX_ROOT}/lib")
 
@@ -61,7 +68,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE "${SHERPA_ONNX_ROOT}/lib")
 # Let's assume sherpa-onnx-c-api based on common conventions, but we might need to adjust.
 # Based on the shared lib tarball content which I can't see yet, I'll try to link 'sherpa-onnx-c-api'.
 # If it fails, I'll inspect the dir.
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE sherpa-onnx-c-api)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE sherpa-onnx-c-api cpp-pinyin::cpp-pinyin)
 
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_20)
 
@@ -80,4 +87,7 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
     "${SHERPA_ONNX_ROOT}/lib/sherpa-onnx-c-api.dll"
     "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/cpp-pinyin/res/dict"
+    "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/dict"
 )

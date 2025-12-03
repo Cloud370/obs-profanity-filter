@@ -11,9 +11,13 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <filesystem>
 
 #include "sherpa-onnx/c-api/c-api.h"
 #include "plugin-config.hpp"
+#include "cpp-pinyin/Pinyin.h"
+#include "cpp-pinyin/G2pglobal.h"
+#include "cpp-pinyin/ManTone.h"
 
 #include <fstream>
 #include <sstream>
@@ -149,6 +153,23 @@ private:
 std::map<string, weak_ptr<ASRModel>> ModelManager::models_;
 mutex ModelManager::mutex_;
 
+// --- Helper Functions ---
+
+static string NormalizePinyin(const string& p) {
+    string s = p;
+    // Map zh->z, ch->c, sh->s
+    if (s.size() >= 2) {
+        if (s.substr(0, 2) == "zh") s = "z" + s.substr(2);
+        else if (s.substr(0, 2) == "ch") s = "c" + s.substr(2);
+        else if (s.substr(0, 2) == "sh") s = "s" + s.substr(2);
+    }
+    // Map ng->n (ang->an, eng->en, ing->in, ong->on)
+    if (s.size() >= 2 && s.substr(s.size()-2) == "ng") {
+        s = s.substr(0, s.size()-1);
+    }
+    return s;
+}
+
 // --- Plugin Instance ---
 
 struct ProfanityFilter {
@@ -202,6 +223,13 @@ struct ProfanityFilter {
     obs_data_t *settings = nullptr;
     uint64_t last_reset_sample_16k = 0;
     set<size_t> processed_matches; 
+    
+    // Pinyin Support
+    shared_ptr<Pinyin::Pinyin> pinyin_converter;
+    vector<vector<string>> cached_pinyin_patterns;
+    string cached_dirty_words_str_for_pinyin;
+    // Cache for single hanzi pinyin to avoid re-conversion
+    map<string, vector<string>> pinyin_cache;
     
     ProfanityFilter(obs_source_t *ctx) : context(ctx) {
         // Initial sync with global config
@@ -400,10 +428,14 @@ struct ProfanityFilter {
                     GlobalConfig *cfg = GetGlobalConfig();
                     vector<regex> patterns;
                     bool show_console;
+                    bool use_pinyin;
+                    string current_dirty_words;
                     {
                         lock_guard<mutex> lock(cfg->mutex);
                         patterns = cfg->dirty_patterns; // Copy
                         show_console = cfg->show_console;
+                        use_pinyin = cfg->use_pinyin;
+                        current_dirty_words = cfg->dirty_words_str;
                     }
                     
                     if (result->count > 0) {
@@ -423,7 +455,7 @@ struct ProfanityFilter {
                             }
                         }
 
-                        // Check patterns
+                        // 1. Regex Matching
                         for (const auto& pattern : patterns) {
                             sregex_iterator begin(full_text.begin(), full_text.end(), pattern);
                             sregex_iterator end;
@@ -437,8 +469,6 @@ struct ProfanityFilter {
                                 float m_start_time = -1.0f;
                                 float m_end_time = -1.0f;
                                 
-                                // Map chars to tokens (Simplified: Assuming char mapping matches tokens roughly)
-                                // Precise mapping requires iterating tokens again.
                                 size_t current_char = 0;
                                 for(int t=0; t<result->count; t++) {
                                     string tok = result->tokens_arr[t];
@@ -473,6 +503,171 @@ struct ProfanityFilter {
                                     LogToFile(ss.str());
                                     
                                     processed_matches.insert(m_start_char);
+                                }
+                            }
+                        }
+
+                        // 2. Pinyin Matching
+                        if (use_pinyin) {
+                            if (!pinyin_converter) {
+                                // Try to locate dict directory relative to the plugin DLL
+                                string dict_path;
+                                
+                                // Method 1: Try OBS data path (Standard Install)
+                                char *obs_data_ptr = obs_module_file("dict");
+                                if (obs_data_ptr) {
+                                    if (filesystem::exists(obs_data_ptr)) {
+                                        dict_path = obs_data_ptr;
+                                    }
+                                    bfree(obs_data_ptr);
+                                }
+                                
+                                // Method 2: Try next to DLL (Portable / Dev)
+                                 if (dict_path.empty()) {
+                                     HMODULE hMod = nullptr;
+                                     MEMORY_BASIC_INFORMATION mbi;
+                                     if (VirtualQuery((LPCVOID)&obs_module_pointer, &mbi, sizeof(mbi))) {
+                                         hMod = (HMODULE)mbi.AllocationBase;
+                                     }
+                                     
+                                     if (hMod) {
+                                         char path[MAX_PATH];
+                                         if (GetModuleFileNameA(hMod, path, MAX_PATH)) {
+                                             filesystem::path p(path);
+                                             p = p.parent_path() / "dict";
+                                             if (filesystem::exists(p)) {
+                                                 dict_path = p.string();
+                                             }
+                                         }
+                                     }
+                                 }
+
+                                if (!dict_path.empty()) {
+                                    Pinyin::setDictionaryPath(dict_path);
+                                    pinyin_converter = make_shared<Pinyin::Pinyin>();
+                                    LogToFile("Pinyin Engine Initialized from: " + dict_path);
+                                } else {
+                                    static bool logged_error = false;
+                                    if (!logged_error) {
+                                        LogToFile("Error: Could not find 'dict' directory for Pinyin engine.");
+                                        logged_error = true;
+                                    }
+                                }
+                            }
+
+                            if (pinyin_converter) {
+                                // Update patterns if changed
+                                if (current_dirty_words != cached_dirty_words_str_for_pinyin) {
+                                    cached_pinyin_patterns.clear();
+                                    stringstream ss(current_dirty_words);
+                                    string item;
+                                    while (getline(ss, item, ',')) {
+                                        item.erase(0, item.find_first_not_of(" \t\n\r"));
+                                        item.erase(item.find_last_not_of(" \t\n\r") + 1);
+                                        if (!item.empty()) {
+                                            auto res = pinyin_converter->hanziToPinyin(item, Pinyin::ManTone::Style::NORMAL, Pinyin::Error::Default, false, false);
+                                            vector<string> pat;
+                                            for(const auto& r : res) {
+                                                if (!r.pinyin.empty() && r.pinyin != " ") {
+                                                     pat.push_back(NormalizePinyin(r.pinyin));
+                                                }
+                                            }
+                                            if (!pat.empty()) cached_pinyin_patterns.push_back(pat);
+                                        }
+                                    }
+                                    cached_dirty_words_str_for_pinyin = current_dirty_words;
+                                }
+
+                                // Prepare text pinyin
+                                vector<string> text_pinyins;
+                                vector<int> pinyin_to_token;
+                                
+                                for(int t=0; t<result->count; t++) {
+                                    string tok = result->tokens_arr[t];
+                                    
+                                    // Try cache first
+                                    vector<string> pinyins;
+                                    auto it = pinyin_cache.find(tok);
+                                    if (it != pinyin_cache.end()) {
+                                        pinyins = it->second;
+                                    } else {
+                                        // Not in cache, convert
+                                        auto res = pinyin_converter->hanziToPinyin(tok, Pinyin::ManTone::Style::NORMAL, Pinyin::Error::Default, false, false);
+                                        for(const auto& r : res) {
+                                             if (!r.pinyin.empty() && r.pinyin != " ") {
+                                                 pinyins.push_back(NormalizePinyin(r.pinyin));
+                                             }
+                                        }
+                                        // Store in cache (limit size to prevent memory leak)
+                                        if (pinyin_cache.size() > 5000) pinyin_cache.clear();
+                                        pinyin_cache[tok] = pinyins;
+                                    }
+
+                                    for(const auto& p : pinyins) {
+                                         text_pinyins.push_back(p);
+                                         pinyin_to_token.push_back(t);
+                                    }
+                                }
+                                
+                                // Debug Log Pinyin (First 3s only to avoid spam)
+                                static int debug_log_count = 0;
+                                if (debug_log_count < 3 && !text_pinyins.empty()) {
+                                    stringstream ss;
+                                    ss << "DEBUG Pinyin: ";
+                                    for(auto& p : text_pinyins) ss << p << " ";
+                                    LogToFile(ss.str());
+                                    debug_log_count++;
+                                }
+
+                                // Match
+                                for (const auto& pat : cached_pinyin_patterns) {
+                                    if (pat.size() > text_pinyins.size()) continue;
+                                    for (size_t i = 0; i <= text_pinyins.size() - pat.size(); ++i) {
+                                        bool match = true;
+                                        for (size_t j = 0; j < pat.size(); ++j) {
+                                            if (text_pinyins[i+j] != pat[j]) {
+                                                match = false;
+                                                break;
+                                            }
+                                        }
+                                        
+                                        if (match) {
+                                            int start_token = pinyin_to_token[i];
+                                            int end_token = pinyin_to_token[i + pat.size() - 1];
+                                            
+                                            // Calculate char pos for processed_matches check
+                                            size_t char_pos = 0;
+                                            for(int k=0; k<start_token; k++) char_pos += string(result->tokens_arr[k]).length();
+                                            
+                                            // Avoid double blocking (if regex already caught it)
+                                            if (processed_matches.count(char_pos)) continue;
+                                            
+                                            float start_time = result->timestamps[start_token];
+                                            float end_time = (end_token < result->count - 1) ? result->timestamps[end_token+1] : (result->timestamps[end_token] + 0.2f);
+                                            
+                                            uint64_t start_16k = last_reset_sample_16k + (uint64_t)(start_time * 16000.0f);
+                                            uint64_t end_16k = last_reset_sample_16k + (uint64_t)(end_time * 16000.0f);
+                                            
+                                            uint64_t start_abs = (start_16k * 3) + start_offset_48k;
+                                            uint64_t end_abs = (end_16k * 3) + start_offset_48k;
+                                            
+                                            start_abs = (start_abs > 2400) ? start_abs - 2400 : 0; 
+                                            end_abs += 2400; 
+                                            
+                                            lock_guard<mutex> b_lock(beep_mutex);
+                                            pending_beeps.push_back({start_abs, end_abs});
+                                            
+                                            stringstream ss;
+                                            ss << "已屏蔽(拼音): ";
+                                            for(const auto& p : pat) ss << p << " ";
+                                            ss << "[匹配源: ";
+                                            for(int k=0; k<pat.size(); k++) ss << text_pinyins[i+k] << " ";
+                                            ss << "]";
+                                            LogToFile(ss.str());
+                                            
+                                            processed_matches.insert(char_pos);
+                                        }
+                                    }
                                 }
                             }
                         }

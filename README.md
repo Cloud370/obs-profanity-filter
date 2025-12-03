@@ -7,6 +7,10 @@
 *   **🛡️ 预读屏蔽 (Time Travel)**: 插件通过强制延迟音频输出（默认 1.5 秒），利用这段时间差进行语音识别。当检测到脏话时，插件会在音频播放给观众**之前**将其替换为静音或“哔”声，实现真正的“直播消音”。
 *   **🧠 本地离线识别**: 集成 **Sherpa-ONNX** 语音识别引擎，无需联网，保护隐私，且占用资源极低。
 *   **⚙️ 全局统一配置**: 通过 OBS 的“工具”菜单统一管理模型路径、屏蔽词库和延迟参数。
+*   **🎯 拼音模糊匹配**: 新增拼音增强识别功能（由 [cpp-pinyin](https://github.com/wolfgitpr/cpp-pinyin) 驱动）。
+    *   忽略声调（如“bǐ”匹配“bi”）。
+    *   模糊音处理（自动平翘舌 z-zh, c-ch, s-sh 转换，前后鼻音 ng-n 归一化）。
+    *   即使语音识别结果字形错误（如“比”），只要拼音接近，也能精准屏蔽。
 *   **🔧 高度可定制**:
     *   自定义屏蔽词列表（支持正则表达式）。
     *   可选“静音”模式或“哔声”模式（可调频率）。
@@ -75,8 +79,12 @@
 
 1.  **克隆仓库**:
     ```powershell
-    git clone https://github.com/your-username/obs-profanity-filter.git
+    # 务必使用 --recursive 参数以拉取 cpp-pinyin 子模块
+    git clone --recursive https://github.com/your-username/obs-profanity-filter.git
     cd obs-profanity-filter
+    
+    # 如果已经克隆但没有子模块:
+    # git submodule update --init --recursive
     ```
 
 2.  **配置项目**:

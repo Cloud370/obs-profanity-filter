@@ -36,6 +36,7 @@ struct GlobalConfig {
     int beep_mix_percent = 100;
     bool show_console = false;
     std::string debug_log_path;
+    bool use_pinyin = false;
     
     // Parsed State
     std::vector<std::regex> dirty_patterns;
@@ -68,6 +69,7 @@ private:
     QDoubleSpinBox *spinDelay;
     QTextEdit *editDirtyWords; // Use TextEdit for multiline
     QCheckBox *chkMuteMode;
+    QCheckBox *chkUsePinyin;
     QSpinBox *spinBeepFreq;
     QSpinBox *spinBeepMix;
     QCheckBox *chkShowConsole;
