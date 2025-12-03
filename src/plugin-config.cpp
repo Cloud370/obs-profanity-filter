@@ -4,11 +4,13 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <QPointer>
 
 using namespace std;
 
 static GlobalConfig* g_config = nullptr;
 static obs_module_t* g_module = nullptr;
+static QPointer<ConfigDialog> g_dialog;
 
 GlobalConfig* GetGlobalConfig() {
     if (!g_config) {
@@ -38,32 +40,42 @@ void GlobalConfig::ParsePatterns() {
 }
 
 void GlobalConfig::Save() {
-    lock_guard<std::mutex> lock(this->mutex);
-    
     obs_data_t *data = obs_data_create();
-    obs_data_set_string(data, "model_path", model_path.c_str());
-    obs_data_set_double(data, "delay_seconds", delay_seconds);
-    obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
-    obs_data_set_bool(data, "mute_mode", mute_mode);
-    obs_data_set_int(data, "beep_freq", beep_frequency);
-    obs_data_set_bool(data, "show_console", show_console);
-    obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
+    string path_to_save;
+    
+    {
+        lock_guard<std::mutex> lock(this->mutex);
+        
+        obs_data_set_string(data, "model_path", model_path.c_str());
+        obs_data_set_double(data, "delay_seconds", delay_seconds);
+        obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
+        obs_data_set_bool(data, "mute_mode", mute_mode);
+        obs_data_set_int(data, "beep_freq", beep_frequency);
+        obs_data_set_bool(data, "show_console", show_console);
+        obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
+        
+        ParsePatterns();
+    }
     
     if (g_module) {
         char *config_path = obs_module_get_config_path(g_module, "global_config.json");
         if (config_path) {
-            filesystem::path p(config_path);
-            if (p.has_parent_path()) {
-                filesystem::create_directories(p.parent_path());
-            }
-            obs_data_save_json(data, config_path);
+            path_to_save = config_path;
             bfree(config_path);
         }
     }
     
-    obs_data_release(data);
+    if (!path_to_save.empty()) {
+        filesystem::path p(path_to_save);
+        if (p.has_parent_path()) {
+            try {
+                filesystem::create_directories(p.parent_path());
+            } catch(...) {}
+        }
+        obs_data_save_json(data, path_to_save.c_str());
+    }
     
-    ParsePatterns();
+    obs_data_release(data);
 }
 
 void GlobalConfig::Load() {
@@ -252,15 +264,26 @@ void InitGlobalConfig() {
     GetGlobalConfig()->Load();
 }
 
-void OpenGlobalConfigDialog() {
-    static ConfigDialog *dialog = nullptr;
-    // Note: We must be careful about thread safety with Qt, but the callback from Menu is usually on UI thread.
-    if (!dialog) {
-        QWidget *mainWindow = (QWidget*)obs_frontend_get_main_window();
-        dialog = new ConfigDialog(mainWindow);
+void FreeGlobalConfig() {
+    if (g_config) {
+        delete g_config;
+        g_config = nullptr;
     }
-    dialog->LoadToUI();
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
+}
+
+void FreeConfigDialog() {
+    if (g_dialog) {
+        delete g_dialog;
+    }
+}
+
+void OpenGlobalConfigDialog() {
+    if (!g_dialog) {
+        QWidget *mainWindow = (QWidget*)obs_frontend_get_main_window();
+        g_dialog = new ConfigDialog(mainWindow);
+    }
+    g_dialog->LoadToUI();
+    g_dialog->show();
+    g_dialog->raise();
+    g_dialog->activateWindow();
 }

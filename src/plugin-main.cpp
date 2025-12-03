@@ -186,7 +186,7 @@ struct ProfanityFilter {
     thread asr_thread;
     atomic<bool> running{false};
     mutex queue_mutex;
-    vector<float> asr_queue; 
+    deque<float> asr_queue; 
     
     // Beep Map
     struct BeepRange {
@@ -728,4 +728,10 @@ MODULE_EXPORT bool obs_module_load(void)
     }, nullptr);
     
     return true;
+}
+
+MODULE_EXPORT void obs_module_unload(void)
+{
+    FreeConfigDialog();
+    FreeGlobalConfig();
 }

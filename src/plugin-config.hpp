@@ -73,5 +73,7 @@ private:
 };
 
 void InitGlobalConfig();
+void FreeGlobalConfig();
 void SetGlobalConfigModule(obs_module_t *module);
 void OpenGlobalConfigDialog();
+void FreeConfigDialog();
