@@ -691,12 +691,12 @@ struct ProfanityFilter {
                     SherpaOnnxDestroyOnlineRecognizerResult(result);
                 }
                 
-                // Check endpoint or force reset if segment is too long (> 60s)
-                bool force_reset = (total_samples_popped_16k - last_reset_sample_16k) > (16000 * 60);
+                // Check endpoint or force reset if segment is too long (> 600s = 10min)
+                bool force_reset = (total_samples_popped_16k - last_reset_sample_16k) > (16000 * 600);
 
                 if (force_reset || SherpaOnnxOnlineStreamIsEndpoint(asr_model->recognizer, stream)) {
                     if (force_reset) {
-                        LogToFile("Warning: Forced reset of ASR stream (segment > 60s)");
+                        LogToFile("Info: Periodic reset of ASR stream (segment > 10min)");
                     }
                     SherpaOnnxOnlineStreamReset(asr_model->recognizer, stream);
                     last_reset_sample_16k = total_samples_popped_16k;
@@ -869,10 +869,26 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
     if (filter->enabled) {
         lock_guard<mutex> lock(filter->beep_mutex);
         uint64_t current_write_pos = filter->channels[0].total_written;
+        uint64_t play_head_pos = 0;
+        if (current_write_pos > delay_samples) {
+            play_head_pos = current_write_pos - delay_samples;
+        }
         
         for (auto it = filter->pending_beeps.begin(); it != filter->pending_beeps.end(); ) {
+             // 1. Handling Late Beeps (Latency > Delay)
+             // If the beep start is already played (behind play_head_pos), move it to now.
+             if (it->start_sample < play_head_pos) {
+                 it->start_sample = play_head_pos;
+             }
+
              uint64_t start = it->start_sample;
              uint64_t end = it->end_sample;
+             
+             if (start >= end) {
+                 // Beep duration became 0 or negative (completely missed and passed)
+                 it = filter->pending_beeps.erase(it);
+                 continue;
+             }
              
              if (end < current_write_pos - current_buf_size) {
                  it = filter->pending_beeps.erase(it);
