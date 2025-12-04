@@ -923,8 +923,10 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
                      
                      float val = 0.0f;
                      if (!global_mute) {
-                        float t = (float)s / 48000.0f;
-                        val = 0.1f * sinf(2.0f * 3.14159f * (float)global_freq * t);
+                        // Use double for phase calculation to avoid precision loss after long runtime
+                        double cycles = (double)s * (double)global_freq / 48000.0;
+                        double phase = cycles - floor(cycles);
+                        val = 0.1f * (float)sin(2.0 * 3.14159265358979323846 * phase);
                      }
                      
                      float mix = (float)global_mix / 100.0f;
