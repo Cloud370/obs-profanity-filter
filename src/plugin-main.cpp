@@ -8,7 +8,6 @@
 #include <thread>
 #include <atomic>
 #include <regex>
-#include <iostream>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
@@ -257,11 +256,9 @@ struct ProfanityFilter {
         }
 
         GlobalConfig *cfg = GetGlobalConfig();
-        bool show_console;
         string debug_log_path;
         {
             lock_guard<mutex> lock(cfg->mutex);
-            show_console = cfg->show_console;
             debug_log_path = cfg->debug_log_path;
         }
         
@@ -274,11 +271,6 @@ struct ProfanityFilter {
             
             log_history.push_front(ss.str());
             if (log_history.size() > 50) log_history.pop_back();
-            
-            if (show_console) {
-                cout << "\r                                                                                \r";
-                cout << put_time(&tm, "[%H:%M:%S] ") << safe_message << endl;
-            }
         }
 
         if (debug_log_path.empty()) return;
@@ -433,13 +425,11 @@ struct ProfanityFilter {
                     // Get Patterns and Config from Global
                     GlobalConfig *cfg = GetGlobalConfig();
                     vector<regex> patterns;
-                    bool show_console;
                     bool use_pinyin;
                     string current_dirty_words;
                     {
                         lock_guard<mutex> lock(cfg->mutex);
                         patterns = cfg->dirty_patterns; // Copy
-                        show_console = cfg->show_console;
                         use_pinyin = cfg->use_pinyin;
                         current_dirty_words = cfg->dirty_words_str;
                     }
@@ -453,11 +443,6 @@ struct ProfanityFilter {
                             {
                                 lock_guard<mutex> lock(history_mutex);
                                 current_partial_text = full_text;
-                            }
-                            if (show_console) {
-                                string display_text = full_text;
-                                if (display_text.length() > 60) display_text = "..." + display_text.substr(display_text.length() - 60);
-                                cout << "\r实时: " << display_text << "            \r" << flush;
                             }
                         }
 

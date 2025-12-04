@@ -34,7 +34,6 @@ struct GlobalConfig {
     bool mute_mode = false;
     int beep_frequency = 1000;
     int beep_mix_percent = 100;
-    bool show_console = false;
     std::string debug_log_path;
     bool use_pinyin = false;
     
@@ -72,7 +71,6 @@ private:
     QCheckBox *chkUsePinyin;
     QSpinBox *spinBeepFreq;
     QSpinBox *spinBeepMix;
-    QCheckBox *chkShowConsole;
     QLineEdit *editLogPath;
 };
 

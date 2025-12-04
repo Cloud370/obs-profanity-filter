@@ -53,7 +53,6 @@ void GlobalConfig::Save() {
         obs_data_set_bool(data, "mute_mode", mute_mode);
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
-        obs_data_set_bool(data, "show_console", show_console);
         obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
         
         ParsePatterns();
@@ -123,8 +122,6 @@ void GlobalConfig::Load() {
         } else {
             beep_mix_percent = 100;
         }
-        
-        show_console = obs_data_get_bool(data, "show_console");
         
         s = obs_data_get_string(data, "debug_log_path");
         debug_log_path = s ? s : "";
@@ -206,8 +203,6 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     QGroupBox *grpDebug = new QGroupBox("调试选项");
     QFormLayout *layoutDebug = new QFormLayout(grpDebug);
     
-    chkShowConsole = new QCheckBox("显示调试控制台 (独立窗口)");
-    
     QHBoxLayout *boxLog = new QHBoxLayout();
     editLogPath = new QLineEdit();
     QPushButton *btnBrowseLog = new QPushButton("浏览...");
@@ -215,7 +210,6 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     boxLog->addWidget(editLogPath);
     boxLog->addWidget(btnBrowseLog);
     
-    layoutDebug->addRow("", chkShowConsole);
     layoutDebug->addRow("日志文件路径:", boxLog);
     mainLayout->addWidget(grpDebug);
     
@@ -248,7 +242,6 @@ void ConfigDialog::LoadToUI() {
     chkMuteMode->setChecked(cfg->mute_mode);
     spinBeepFreq->setValue(cfg->beep_frequency);
     spinBeepMix->setValue(cfg->beep_mix_percent);
-    chkShowConsole->setChecked(cfg->show_console);
     editLogPath->setText(QString::fromStdString(cfg->debug_log_path));
 }
 
@@ -278,7 +271,6 @@ void ConfigDialog::onSave() {
         cfg->mute_mode = chkMuteMode->isChecked();
         cfg->beep_frequency = spinBeepFreq->value();
         cfg->beep_mix_percent = spinBeepMix->value();
-        cfg->show_console = chkShowConsole->isChecked();
         cfg->debug_log_path = editLogPath->text().toStdString();
     }
     
