@@ -105,7 +105,7 @@ void GlobalConfig::Load() {
         model_path = s ? s : "";
         
         delay_seconds = obs_data_get_double(data, "delay_seconds");
-        if (delay_seconds < 0.1) delay_seconds = 1.0;
+        if (delay_seconds < 0.01) delay_seconds = 0.5;
         
         s = obs_data_get_string(data, "dirty_words");
         dirty_words_str = s ? s : "卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
@@ -162,10 +162,10 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     QGroupBox *grpAudio = new QGroupBox("音频处理");
     QFormLayout *layoutAudio = new QFormLayout(grpAudio);
     
-    spinDelay = new QDoubleSpinBox();
-    spinDelay->setRange(0.1, 10.0);
-    spinDelay->setSingleStep(0.1);
-    spinDelay->setSuffix(" 秒");
+    spinDelay = new QSpinBox();
+    spinDelay->setRange(0, 10000);
+    spinDelay->setSingleStep(50);
+    spinDelay->setSuffix(" ms");
     
     chkMuteMode = new QCheckBox("静音模式 (不播放哔声)");
     
@@ -236,7 +236,7 @@ void ConfigDialog::LoadToUI() {
     lock_guard<std::mutex> lock(cfg->mutex);
     
     editModelPath->setText(QString::fromStdString(cfg->model_path));
-    spinDelay->setValue(cfg->delay_seconds);
+    spinDelay->setValue((int)(cfg->delay_seconds * 1000));
     editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
     chkUsePinyin->setChecked(cfg->use_pinyin);
     chkMuteMode->setChecked(cfg->mute_mode);
@@ -265,7 +265,7 @@ void ConfigDialog::onSave() {
     {
         lock_guard<std::mutex> lock(cfg->mutex);
         cfg->model_path = editModelPath->text().toStdString();
-        cfg->delay_seconds = spinDelay->value();
+        cfg->delay_seconds = spinDelay->value() / 1000.0;
         cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
         cfg->use_pinyin = chkUsePinyin->isChecked();
         cfg->mute_mode = chkMuteMode->isChecked();

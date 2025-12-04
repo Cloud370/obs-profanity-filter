@@ -99,8 +99,16 @@ struct ASRModel {
         config.model_config.num_threads = 1;
         config.model_config.provider = "cpu";
         
-        config.decoding_method = "greedy_search";
+        // Use modified_beam_search for better accuracy on short phrases
+        config.decoding_method = "modified_beam_search"; 
         config.max_active_paths = 4;
+        
+        // Enable Endpoint detection to reset state after silence
+        // This helps with recognition consistency for isolated phrases
+        config.enable_endpoint = 1;
+        config.rule1_min_trailing_silence = 2.4f;
+        config.rule2_min_trailing_silence = 1.2f;
+        config.rule3_min_utterance_length = 0.0f;
         
         recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
         if (!recognizer) {
@@ -222,6 +230,7 @@ struct ProfanityFilter {
     obs_data_t *settings = nullptr;
     uint64_t last_reset_sample_16k = 0;
     set<size_t> processed_matches; 
+    atomic<size_t> dropped_beeps_count{0};
     
     // Pinyin Support
     shared_ptr<Pinyin::Pinyin> pinyin_converter;
@@ -311,6 +320,11 @@ struct ProfanityFilter {
             beeps_count = pending_beeps.size();
         }
         ss << "待播放Beep: " << beeps_count << endl;
+        
+        size_t dropped = dropped_beeps_count.load();
+        if (dropped > 0) {
+            ss << "⚠️ 已丢弃Beep (延迟过高): " << dropped << " 次 (建议增加延迟时间)" << endl;
+        }
 
         ss << "实时识别: " << (current_partial_text.empty() ? "(..." : current_partial_text) << endl;
         
@@ -382,11 +396,6 @@ struct ProfanityFilter {
             {
                 string target;
                 {
-                    // We can access target_model_path safely?
-                    // It is written by audio thread. We need atomic read or lock?
-                    // ProfanityFilter members access isn't mutex protected generally, but strings are not atomic.
-                    // We'll use a copy in the struct updated by audio thread, so we need care.
-                    // Actually, let's use queue_mutex for this sync to be safe.
                     lock_guard<mutex> lock(queue_mutex);
                     target = target_model_path;
                 }
@@ -404,6 +413,22 @@ struct ProfanityFilter {
                     size_t n = min((size_t)3200, asr_queue.size()); 
                     chunk.assign(asr_queue.begin(), asr_queue.begin() + n);
                     asr_queue.erase(asr_queue.begin(), asr_queue.begin() + n);
+                } else {
+                    // Re-sync offset to handle gaps (e.g. toggle enabled, queue clear)
+                    // This ensures timestamps remain accurate even if we dropped samples
+                    if (!channels.empty()) {
+                        uint64_t tw = channels[0].total_written;
+                        // Calculate what start_offset_48k SHOULD be so that:
+                        // current_time ~= start_offset + total_popped * 3
+                        // We assume since queue is empty, current_time == tw
+                        
+                        // Use signed math to handle potential small drift
+                        int64_t diff = (int64_t)tw - (int64_t)(total_samples_popped_16k * 3);
+                        // start_offset_48k is uint64, assuming positive result
+                        if (diff >= 0) {
+                            start_offset_48k = (uint64_t)diff;
+                        }
+                    }
                 }
             }
             
@@ -871,6 +896,13 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
              
              if (start >= end) {
                  // Beep duration became 0 or negative (completely missed and passed)
+                 // Log warning for the first few times or if periodic
+                 size_t dropped = ++filter->dropped_beeps_count;
+                 if (dropped <= 5 || dropped % 10 == 0) {
+                     blog(LOG_WARNING, "[Profanity Filter] Beep dropped! Latency > Delay. Increase delay setting. (Start: %llu, End: %llu, Head: %llu)", 
+                         (unsigned long long)start, (unsigned long long)end, (unsigned long long)play_head_pos);
+                 }
+
                  it = filter->pending_beeps.erase(it);
                  continue;
              }

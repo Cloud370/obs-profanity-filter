@@ -29,13 +29,13 @@ struct GlobalConfig {
     
     // Settings
     std::string model_path;
-    double delay_seconds = 1.0;
+    double delay_seconds = 0.5;
     std::string dirty_words_str; // Comma separated
     bool mute_mode = false;
     int beep_frequency = 1000;
     int beep_mix_percent = 100;
     std::string debug_log_path;
-    bool use_pinyin = false;
+    bool use_pinyin = true;
     
     // Parsed State
     std::vector<std::regex> dirty_patterns;
@@ -65,7 +65,7 @@ private slots:
     
 private:
     QLineEdit *editModelPath;
-    QDoubleSpinBox *spinDelay;
+    QSpinBox *spinDelay;
     QTextEdit *editDirtyWords; // Use TextEdit for multiline
     QCheckBox *chkMuteMode;
     QCheckBox *chkUsePinyin;
