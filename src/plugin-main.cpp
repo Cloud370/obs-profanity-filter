@@ -383,6 +383,7 @@ struct ProfanityFilter {
         
         // Time sync
         uint64_t start_offset_input = 0;
+        uint64_t last_feed_offset = 0;
         uint64_t tw = total_samples_written.load();
         if (tw > 0) {
             size_t q_size;
@@ -395,6 +396,7 @@ struct ProfanityFilter {
             if (tw > backlog_input) {
                 start_offset_input = tw - backlog_input;
             }
+            last_feed_offset = start_offset_input;
         }
 
         while (running) {
@@ -410,6 +412,23 @@ struct ProfanityFilter {
                     LoadModel(target);
                     // Reset stream implies resetting timestamp reference
                     last_reset_sample_16k = total_samples_popped_16k;
+
+                    // Fix: Clear queue and processed matches to prevent latency accumulation and index collision
+                    {
+                        lock_guard<mutex> lock(queue_mutex);
+                        asr_queue.clear();
+                    }
+                    
+                    // Re-sync time after clearing queue
+                    uint64_t tw_now = total_samples_written.load();
+                    double ratio_now = sample_rate_ratio.load();
+                    int64_t diff = (int64_t)tw_now - (int64_t)(total_samples_popped_16k * ratio_now);
+                    if (diff >= 0) {
+                        start_offset_input = (uint64_t)diff;
+                    }
+                    last_feed_offset = start_offset_input;
+                    
+                    processed_matches.clear();
                 }
             }
             
@@ -421,6 +440,23 @@ struct ProfanityFilter {
             {
                 lock_guard<mutex> lock(queue_mutex);
                 if (!asr_queue.empty()) {
+                    // Gap Check: If start_offset_input jumped significantly (e.g. > 0.5s), reset stream
+                    // This handles cases where filter was disabled/idle for a long time, ensuring fresh context
+                    // and preventing latency accumulation from stale state.
+                    if (start_offset_input > last_feed_offset + (uint64_t)(current_sr * 0.5)) {
+                         if (asr_model && asr_model->recognizer && stream) {
+                             SherpaOnnxDestroyOnlineStream(stream);
+                             stream = SherpaOnnxCreateOnlineStream(asr_model->recognizer);
+                             last_reset_sample_16k = total_samples_popped_16k;
+                             processed_matches.clear();
+                             {
+                                 lock_guard<mutex> h_lock(history_mutex);
+                                 current_partial_text = "";
+                             }
+                         }
+                    }
+                    last_feed_offset = start_offset_input;
+
                     size_t n = min((size_t)3200, asr_queue.size()); 
                     chunk.assign(asr_queue.begin(), asr_queue.begin() + n);
                     asr_queue.erase(asr_queue.begin(), asr_queue.begin() + n);
