@@ -209,6 +209,7 @@ struct ProfanityFilter {
     vector<ChannelBuffer> channels;
     atomic<uint32_t> sample_rate{48000};
     atomic<double> sample_rate_ratio{3.0}; // sample_rate / 16000.0
+    atomic<uint64_t> total_samples_written{0}; // Safe access for ASRLoop
     size_t channels_count = 0;
     
     // Resampler state
@@ -382,8 +383,8 @@ struct ProfanityFilter {
         
         // Time sync
         uint64_t start_offset_input = 0;
-        if (!channels.empty()) {
-            uint64_t tw = channels[0].total_written;
+        uint64_t tw = total_samples_written.load();
+        if (tw > 0) {
             size_t q_size;
             {
                 lock_guard<mutex> lock(queue_mutex);
@@ -426,8 +427,8 @@ struct ProfanityFilter {
                 } else {
                     // Re-sync offset to handle gaps (e.g. toggle enabled, queue clear)
                     // This ensures timestamps remain accurate even if we dropped samples
-                    if (!channels.empty()) {
-                        uint64_t tw = channels[0].total_written;
+                    uint64_t tw = total_samples_written.load();
+                    if (tw > 0) {
                         // Calculate what start_offset_input SHOULD be so that:
                         // current_time ~= start_offset + total_popped * ratio
                         // We assume since queue is empty, current_time == tw
@@ -755,9 +756,13 @@ static void destroy(void *data) {
 
 static void update(void *data, obs_data_t *settings) {
     ProfanityFilter *filter = (ProfanityFilter *)data;
-    if (filter->settings) obs_data_release(filter->settings);
-    filter->settings = settings;
+    
+    // Safe update to avoid race with refresh_history
     obs_data_addref(settings);
+    obs_data_t *old = filter->settings;
+    filter->settings = settings;
+    if (old) obs_data_release(old);
+
     filter->enabled = obs_data_get_bool(settings, "enabled");
 }
 
@@ -935,6 +940,7 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
             ch.total_written++;
         }
     }
+    filter->total_samples_written.fetch_add(frames);
     
     // Apply Beeps (Only if enabled)
     if (filter->enabled) {
