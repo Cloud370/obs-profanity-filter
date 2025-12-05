@@ -207,8 +207,12 @@ struct ProfanityFilter {
     };
     
     vector<ChannelBuffer> channels;
-    uint32_t sample_rate = 48000;
+    atomic<uint32_t> sample_rate{48000};
+    atomic<double> sample_rate_ratio{3.0}; // sample_rate / 16000.0
     size_t channels_count = 0;
+    
+    // Resampler state
+    float resample_acc = 0.0f;
     
     // ASR Thread
     thread asr_thread;
@@ -377,7 +381,7 @@ struct ProfanityFilter {
         uint64_t total_samples_popped_16k = 0;
         
         // Time sync
-        uint64_t start_offset_48k = 0;
+        uint64_t start_offset_input = 0;
         if (!channels.empty()) {
             uint64_t tw = channels[0].total_written;
             size_t q_size;
@@ -385,9 +389,10 @@ struct ProfanityFilter {
                 lock_guard<mutex> lock(queue_mutex);
                 q_size = asr_queue.size();
             }
-            uint64_t backlog_48k = q_size * 3;
-            if (tw > backlog_48k) {
-                start_offset_48k = tw - backlog_48k;
+            double ratio = sample_rate_ratio.load();
+            uint64_t backlog_input = (uint64_t)(q_size * ratio);
+            if (tw > backlog_input) {
+                start_offset_input = tw - backlog_input;
             }
         }
 
@@ -402,11 +407,16 @@ struct ProfanityFilter {
                 
                 if (target != loaded_model_path) {
                     LoadModel(target);
+                    // Reset stream implies resetting timestamp reference
+                    last_reset_sample_16k = total_samples_popped_16k;
                 }
             }
             
             // 2. Process Audio
             vector<float> chunk;
+            double current_ratio = sample_rate_ratio.load();
+            uint32_t current_sr = sample_rate.load();
+
             {
                 lock_guard<mutex> lock(queue_mutex);
                 if (!asr_queue.empty()) {
@@ -418,15 +428,15 @@ struct ProfanityFilter {
                     // This ensures timestamps remain accurate even if we dropped samples
                     if (!channels.empty()) {
                         uint64_t tw = channels[0].total_written;
-                        // Calculate what start_offset_48k SHOULD be so that:
-                        // current_time ~= start_offset + total_popped * 3
+                        // Calculate what start_offset_input SHOULD be so that:
+                        // current_time ~= start_offset + total_popped * ratio
                         // We assume since queue is empty, current_time == tw
                         
                         // Use signed math to handle potential small drift
-                        int64_t diff = (int64_t)tw - (int64_t)(total_samples_popped_16k * 3);
-                        // start_offset_48k is uint64, assuming positive result
+                        int64_t diff = (int64_t)tw - (int64_t)(total_samples_popped_16k * current_ratio);
+                        // start_offset_input is uint64, assuming positive result
                         if (diff >= 0) {
-                            start_offset_48k = (uint64_t)diff;
+                            start_offset_input = (uint64_t)diff;
                         }
                     }
                 }
@@ -505,11 +515,13 @@ struct ProfanityFilter {
                                     uint64_t start_16k = last_reset_sample_16k + (uint64_t)(m_start_time * 16000.0f);
                                     uint64_t end_16k = last_reset_sample_16k + (uint64_t)(m_end_time * 16000.0f);
                                     
-                                    uint64_t start_abs = (start_16k * 3) + start_offset_48k;
-                                    uint64_t end_abs = (end_16k * 3) + start_offset_48k;
+                                    uint64_t start_abs = (uint64_t)(start_16k * current_ratio) + start_offset_input;
+                                    uint64_t end_abs = (uint64_t)(end_16k * current_ratio) + start_offset_input;
                                     
-                                    start_abs = (start_abs > 2400) ? start_abs - 2400 : 0; 
-                                    end_abs += 2400; 
+                                    // Safe margin: 50ms = 0.05 * sr
+                                    uint32_t margin = (uint32_t)(0.05 * current_sr);
+                                    start_abs = (start_abs > margin) ? start_abs - margin : 0; 
+                                    end_abs += margin; 
                                     
                                     lock_guard<mutex> b_lock(beep_mutex);
                                     pending_beeps.push_back({start_abs, end_abs});
@@ -674,11 +686,13 @@ struct ProfanityFilter {
                                             uint64_t start_16k = last_reset_sample_16k + (uint64_t)(start_time * 16000.0f);
                                             uint64_t end_16k = last_reset_sample_16k + (uint64_t)(end_time * 16000.0f);
                                             
-                                            uint64_t start_abs = (start_16k * 3) + start_offset_48k;
-                                            uint64_t end_abs = (end_16k * 3) + start_offset_48k;
+                                            uint64_t start_abs = (uint64_t)(start_16k * current_ratio) + start_offset_input;
+                                            uint64_t end_abs = (uint64_t)(end_16k * current_ratio) + start_offset_input;
                                             
-                                            start_abs = (start_abs > 2400) ? start_abs - 2400 : 0; 
-                                            end_abs += 2400; 
+                                            // Safe margin: 50ms = 0.05 * sr
+                                            uint32_t margin = (uint32_t)(0.05 * current_sr);
+                                            start_abs = (start_abs > margin) ? start_abs - margin : 0; 
+                                            end_abs += margin; 
                                             
                                             lock_guard<mutex> b_lock(beep_mutex);
                                             pending_beeps.push_back({start_abs, end_abs});
@@ -819,6 +833,24 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
     double sum_sq = 0.0;
     for (size_t i = 0; i < frames; i++) sum_sq += input[i] * input[i];
     filter->current_rms = (float)sqrt(sum_sq / frames);
+    
+    // Update Sample Rate (Dynamic)
+    uint32_t current_sr = 0;
+    struct obs_audio_info aoi;
+    if (obs_get_audio_info(&aoi)) {
+        current_sr = aoi.samples_per_sec;
+    }
+    if (current_sr == 0) current_sr = 48000; // Fallback
+    
+    // Update state if changed
+    if (filter->sample_rate != current_sr) {
+        filter->sample_rate = current_sr;
+        filter->sample_rate_ratio = (double)current_sr / 16000.0;
+        // Reset resampler
+        filter->resample_acc = 0.0f;
+    }
+    
+    double current_ratio = filter->sample_rate_ratio.load();
 
     if (filter->enabled && !filter->target_model_path.empty()) {
         lock_guard<mutex> lock(filter->queue_mutex);
@@ -830,11 +862,23 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
             // Note: We cannot safely log from audio thread usually, but this is a critical fallback
         }
 
-        for (size_t i = 0; i < frames; i += 3) {
-             if (i + 2 < frames) {
-                 float val = (input[i] + input[i+1] + input[i+2]) / 3.0f;
-                 filter->asr_queue.push_back(val);
-             } else if (i < frames) {
+        // Dynamic Downsampling (Nearest Neighbor / Accumulator)
+        // We want to output 16000Hz samples.
+        // Step size = input_rate / 16000.
+        // e.g. 48k -> step 3.0; 44.1k -> step 2.75625
+        
+        for (size_t i = 0; i < frames; i++) {
+             filter->resample_acc += 1.0f;
+             if (filter->resample_acc >= current_ratio) {
+                 filter->resample_acc -= (float)current_ratio;
+                 // Take sample (Nearest) or Average?
+                 // For simplicity and speed, just take current sample.
+                 // Better quality: average previous samples.
+                 // Given the previous implementation was averaging 3 samples for 48k, 
+                 // let's stick to simple picking or basic averaging if possible.
+                 // To keep it extremely simple and robust for 44.1k: simple decimation is "okay" for ASR.
+                 // Ideally we should use a low-pass filter but that's heavy.
+                 
                  filter->asr_queue.push_back(input[i]);
              }
         }
@@ -848,20 +892,37 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
         if (filter->channels_count == 0) filter->channels_count = 1;
         filter->channels.resize(filter->channels_count);
         
-        size_t buf_size = 48000 * 12; // Max 12s
+        size_t buf_size = current_sr * 12; // Max 12s
         for (auto& ch : filter->channels) {
             ch.buffer.resize(buf_size, 0.0f);
         }
     }
     
     // Ensure buffer size covers delay
-    size_t delay_samples = (size_t)(filter->cached_delay * 48000);
+    size_t delay_samples = (size_t)(filter->cached_delay * current_sr);
     size_t current_buf_size = filter->channels[0].buffer.size();
-    if (delay_samples * 2 > current_buf_size) {
-        // Resize if needed (Naive)
-        // Just clamp delay for now to avoid real-time resize complexity
-        if (delay_samples >= current_buf_size) delay_samples = current_buf_size - 48000;
+    
+    // Resize check (handle sample rate change or large delay)
+    if (delay_samples * 2 > current_buf_size || current_buf_size != current_sr * 12) {
+         size_t new_size = max((size_t)(current_sr * 12), delay_samples * 2);
+         if (new_size != current_buf_size) {
+             // Resize buffers (clears content, causing a glitch, but SR change is rare)
+             current_buf_size = new_size;
+             for (auto& ch : filter->channels) {
+                 vector<float> new_buf(new_size, 0.0f);
+                 // Copy old data? Complex due to circular buffer. 
+                 // Just reset for safety on SR change.
+                 ch.buffer = new_buf;
+                 ch.head = 0;
+                 // Keep total_written to maintain continuity if possible, 
+                 // but indices are invalid. Resetting is safer.
+                 // However, we can't reset total_written easily without affecting ASR sync.
+                 // So we just accept a gap in audio buffer.
+             }
+         }
     }
+    
+    if (delay_samples >= current_buf_size) delay_samples = current_buf_size - current_sr;
     
     // Write to buffer
     for (size_t c = 0; c < filter->channels_count; c++) {
@@ -924,7 +985,7 @@ static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *au
                      float val = 0.0f;
                      if (!global_mute) {
                         // Use double for phase calculation to avoid precision loss after long runtime
-                        double cycles = (double)s * (double)global_freq / 48000.0;
+                        double cycles = (double)s * (double)global_freq / (double)current_sr;
                         double phase = cycles - floor(cycles);
                         val = 0.1f * (float)sin(2.0 * 3.14159265358979323846 * phase);
                      }
