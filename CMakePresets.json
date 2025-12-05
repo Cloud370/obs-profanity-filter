@@ -50,7 +50,7 @@
       "displayName": "Windows x64",
       "description": "Build for Windows x64",
       "inherits": ["template"],
-      "binaryDir": "${sourceDir}/build_x64",
+      "binaryDir": "${sourceDir}/build",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",

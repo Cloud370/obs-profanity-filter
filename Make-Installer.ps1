@@ -20,21 +20,21 @@ Write-Host "Found ISCC: $ISCC"
 
 # Configure
 Write-Host "Configuring CMake..."
-cmake -S . -B build_installer -A x64
+cmake -S . -B build -A x64
 
 # Build
 Write-Host "Building Release..."
-cmake --build build_installer --config Release --parallel
+cmake --build build --config Release --parallel
 
 # Install to Package
 Write-Host "Creating Package Structure..."
 $PackageDir = "$ProjectRoot/release/Package"
 if (Test-Path $PackageDir) { Remove-Item $PackageDir -Recurse -Force }
-cmake --install build_installer --prefix "$ProjectRoot/release/Package" --config Release
+cmake --install build --prefix "$ProjectRoot/release/Package" --config Release
 
 # Run ISCC
 Write-Host "Compiling Installer..."
-$IssFile = "$ProjectRoot/build_installer/installer.iss"
+$IssFile = "$ProjectRoot/build/installer.iss"
 
 if (Test-Path $ISCC) {
     & $ISCC $IssFile
@@ -42,4 +42,4 @@ if (Test-Path $ISCC) {
     iscc $IssFile
 }
 
-Write-Host "Done! Check release folder or build_installer folder for the output."
+Write-Host "Done! Check release folder or build folder for the output."
