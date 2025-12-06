@@ -30,6 +30,7 @@ struct GlobalConfig {
     bool is_first_run = false;
     
     // Settings
+    bool global_enable = true;
     std::string model_path;
     double delay_seconds = 0.5;
     std::string dirty_words_str; // Comma separated
@@ -69,6 +70,7 @@ private slots:
     void updateStatus();
     
 private:
+    QCheckBox *chkGlobalEnable;
     QLineEdit *editModelPath;
     QSpinBox *spinDelay;
     QTextEdit *editDirtyWords; // Use TextEdit for multiline
@@ -80,6 +82,9 @@ private:
     QCheckBox *chkEnableVideoDelay;
     QLabel *lblVideoMemory;
     QTimer *statusTimer;
+    
+    // Container for all settings below global switch
+    QWidget *settingsContainer;
 };
 
 void InitGlobalConfig();

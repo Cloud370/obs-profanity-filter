@@ -86,7 +86,18 @@ string ProfanityFilter::GetHistoryString() {
     auto tm = *localtime(&t);
     
     ss << "=== 实时状态 (更新时间: " << put_time(&tm, "%H:%M:%S") << ") ===" << endl;
-    if (asr_model && asr_model->recognizer) {
+
+    GlobalConfig *cfg = GetGlobalConfig();
+    bool global_enable = true;
+    {
+        lock_guard<mutex> lock(cfg->mutex);
+        global_enable = cfg->global_enable;
+    }
+    
+    if (!global_enable) {
+         ss << "引擎状态: ⚪ 已全局禁用 (资源已释放)" << endl;
+         ss << "提示信息: 请在设置中开启全局开关以恢复功能" << endl;
+    } else if (asr_model && asr_model->recognizer) {
             ss << "引擎状态: 🟢 运行中 (" << loaded_model_path << ")" << endl;
             ss << "当前音量: " << fixed << setprecision(4) << current_rms << endl;
     } else {
@@ -130,8 +141,23 @@ void ProfanityFilter::LoadModel(const string& path) {
     initialization_error = "";
     
     if (path.empty()) {
+        loaded_model_path = "";
+        
+        // Check if it's due to global disable
+        GlobalConfig *cfg = GetGlobalConfig();
+        bool global_enable = true;
+        if (cfg) {
+            lock_guard<mutex> lock(cfg->mutex);
+            global_enable = cfg->global_enable;
+        }
+        
+        if (global_enable) {
             initialization_error = "未选择模型路径";
-            return;
+            LogToFile("错误: " + initialization_error);
+        } else {
+            // Just unloaded, no error
+        }
+        return;
     }
     
     string err;
@@ -562,6 +588,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
     bool global_mute;
     int global_freq;
     int global_mix;
+    bool global_enable;
     
     {
         lock_guard<mutex> lock(cfg->mutex);
@@ -570,6 +597,16 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
         global_mute = cfg->mute_mode;
         global_freq = cfg->beep_frequency;
         global_mix = cfg->beep_mix_percent;
+        global_enable = cfg->global_enable;
+    }
+    
+    // If disabled globally, pass through and signal unload
+    if (!global_enable) {
+        {
+            lock_guard<mutex> lock(queue_mutex);
+            target_model_path = ""; // Signal unload
+        }
+        return audio;
     }
     
     // Update Filter State

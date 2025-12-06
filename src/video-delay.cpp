@@ -86,6 +86,18 @@ void VideoDelayFilter::UpdateDelayFromConfig() {
     GlobalConfig *cfg = GetGlobalConfig();
     if (!cfg) return;
     
+    // If global switch is off, force delay to 0 (this will free textures in UpdateInterval)
+    if (!cfg->global_enable) {
+        if (delay_ns != 0) {
+            delay_ns = 0;
+            cx = 0;
+            cy = 0;
+            interval_ns = 0;
+            FreeTextures();
+        }
+        return;
+    }
+    
     // Convert seconds to ns
     uint64_t new_delay = (uint64_t)(cfg->delay_seconds * 1000000000.0);
     

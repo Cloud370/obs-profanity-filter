@@ -48,6 +48,7 @@ void GlobalConfig::Save() {
     {
         lock_guard<std::mutex> lock(this->mutex);
         
+        obs_data_set_bool(data, "global_enable", global_enable);
         obs_data_set_string(data, "model_path", model_path.c_str());
         obs_data_set_double(data, "delay_seconds", delay_seconds);
         obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
@@ -104,6 +105,12 @@ void GlobalConfig::Load() {
     obs_data_t *data = obs_data_create_from_json_file(path.c_str());
     
     if (data) {
+        if (obs_data_has_user_value(data, "global_enable")) {
+            global_enable = obs_data_get_bool(data, "global_enable");
+        } else {
+            global_enable = true;
+        }
+
         const char* s = obs_data_get_string(data, "model_path");
         model_path = s ? s : "";
         
@@ -155,6 +162,19 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     
+    // Global Enable
+    chkGlobalEnable = new QCheckBox("启用全局脏话过滤功能 (Master Switch)");
+    chkGlobalEnable->setToolTip("关闭此选项将完全禁用插件功能：\n1. 卸载语音识别模型 (释放内存)\n2. 停止所有音频检测\n3. 禁用视频延迟同步\n(相当于插件完全未运行)");
+    QFont font = chkGlobalEnable->font();
+    font.setBold(true);
+    chkGlobalEnable->setFont(font);
+    mainLayout->addWidget(chkGlobalEnable);
+    
+    // --- Container for switchable content ---
+    settingsContainer = new QWidget();
+    QVBoxLayout *containerLayout = new QVBoxLayout(settingsContainer);
+    containerLayout->setContentsMargins(0, 0, 0, 0);
+    
     // Model Group
     QGroupBox *grpModel = new QGroupBox("模型设置");
     QFormLayout *layoutModel = new QFormLayout(grpModel);
@@ -167,7 +187,7 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     boxPath->addWidget(btnBrowse);
     
     layoutModel->addRow("Sherpa-ONNX 模型路径:", boxPath);
-    mainLayout->addWidget(grpModel);
+    containerLayout->addWidget(grpModel);
     
     // Audio Group
     QGroupBox *grpAudio = new QGroupBox("音频处理");
@@ -203,7 +223,7 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     lblVideoMemory->setStyleSheet("color: #888; font-style: italic;");
     layoutAudio->addRow("", lblVideoMemory);
     
-    mainLayout->addWidget(grpAudio);
+    containerLayout->addWidget(grpAudio);
     
     // Words Group
     QGroupBox *grpWords = new QGroupBox("屏蔽词设置");
@@ -217,7 +237,7 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     chkUsePinyin->setToolTip("开启后将使用拼音进行匹配，忽略声调和平卷舌差异，提高识别率。");
     layoutWords->addWidget(chkUsePinyin);
 
-    mainLayout->addWidget(grpWords);
+    containerLayout->addWidget(grpWords);
     
     // Debug Group
     QGroupBox *grpDebug = new QGroupBox("调试选项");
@@ -231,7 +251,18 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     boxLog->addWidget(btnBrowseLog);
     
     layoutDebug->addRow("日志文件路径:", boxLog);
-    mainLayout->addWidget(grpDebug);
+    containerLayout->addWidget(grpDebug);
+    
+    // Add container to main layout
+    mainLayout->addWidget(settingsContainer);
+    
+    // Connect Visibility Toggle
+    connect(chkGlobalEnable, &QCheckBox::toggled, settingsContainer, &QWidget::setVisible);
+    connect(chkGlobalEnable, &QCheckBox::toggled, this, [this](bool checked){
+         this->resize(this->width(), this->minimumSizeHint().height());
+    });
+    
+    mainLayout->addStretch();
     
     // Buttons
     QHBoxLayout *btnLayout = new QHBoxLayout();
@@ -266,6 +297,8 @@ void ConfigDialog::LoadToUI() {
     GlobalConfig *cfg = GetGlobalConfig();
     lock_guard<std::mutex> lock(cfg->mutex);
     
+    chkGlobalEnable->setChecked(cfg->global_enable);
+    settingsContainer->setVisible(cfg->global_enable);
     editModelPath->setText(QString::fromStdString(cfg->model_path));
     spinDelay->setValue((int)(cfg->delay_seconds * 1000));
     editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
@@ -281,7 +314,9 @@ void ConfigDialog::updateStatus() {
     double mb = VideoDelayFilter::total_memory_mb.load();
     QString text = QString("当前音画同步显存占用: %1 MB").arg(mb, 0, 'f', 1);
     
-    if (mb < 0.1 && chkEnableVideoDelay->isChecked()) {
+    if (!chkGlobalEnable->isChecked()) {
+        text += " (全局已禁用)";
+    } else if (mb < 0.1 && chkEnableVideoDelay->isChecked()) {
         text += " (待机中)";
     }
     
@@ -315,7 +350,8 @@ void ConfigDialog::onApply() {
     {
         lock_guard<std::mutex> lock(cfg->mutex);
         old_enabled_state = cfg->video_delay_enabled;
-
+        
+        cfg->global_enable = chkGlobalEnable->isChecked();
         cfg->model_path = editModelPath->text().toStdString();
         cfg->delay_seconds = spinDelay->value() / 1000.0;
         cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
