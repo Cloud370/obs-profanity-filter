@@ -17,6 +17,7 @@
 #include <QFormLayout>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QTimer>
 
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 // Global Configuration Structure
 struct GlobalConfig {
     bool loaded = false;
+    bool is_first_run = false;
     
     // Settings
     std::string model_path;
@@ -36,6 +38,7 @@ struct GlobalConfig {
     int beep_mix_percent = 100;
     std::string debug_log_path;
     bool use_pinyin = true;
+    bool video_delay_enabled = true;
     
     // Parsed State
     std::vector<std::regex> dirty_patterns;
@@ -62,6 +65,8 @@ private slots:
     void onBrowseModel();
     void onBrowseLog();
     void onSave();
+    void onApply();
+    void updateStatus();
     
 private:
     QLineEdit *editModelPath;
@@ -72,6 +77,9 @@ private:
     QSpinBox *spinBeepFreq;
     QSpinBox *spinBeepMix;
     QLineEdit *editLogPath;
+    QCheckBox *chkEnableVideoDelay;
+    QLabel *lblVideoMemory;
+    QTimer *statusTimer;
 };
 
 void InitGlobalConfig();
@@ -79,3 +87,6 @@ void FreeGlobalConfig();
 void SetGlobalConfigModule(obs_module_t *module);
 void OpenGlobalConfigDialog();
 void FreeConfigDialog();
+
+// Function implemented in plugin-main.cpp
+void UpdateVideoDelayFiltersState();

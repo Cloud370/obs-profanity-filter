@@ -1,9 +1,11 @@
 #include "plugin-config.hpp"
+#include "video-delay.hpp"
 #include <obs-module.h>
 #include <obs.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <QPointer>
 
 using namespace std;
@@ -54,6 +56,7 @@ void GlobalConfig::Save() {
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
         obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
+        obs_data_set_bool(data, "video_delay_enabled", video_delay_enabled);
         
         ParsePatterns();
     }
@@ -126,10 +129,18 @@ void GlobalConfig::Load() {
         s = obs_data_get_string(data, "debug_log_path");
         debug_log_path = s ? s : "";
         
+        if (obs_data_has_user_value(data, "video_delay_enabled")) {
+            video_delay_enabled = obs_data_get_bool(data, "video_delay_enabled");
+        } else {
+            video_delay_enabled = true;
+        }
+
         obs_data_release(data);
     } else {
         // Defaults
         dirty_words_str = "fuck, shit, bitch, 卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
+        video_delay_enabled = true;
+        is_first_run = true;
     }
     
     ParsePatterns();
@@ -183,6 +194,15 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     layoutAudio->addRow("", chkMuteMode);
     layoutAudio->addRow("哔声频率:", spinBeepFreq);
     layoutAudio->addRow("哔声/静音混合比例:", spinBeepMix);
+    
+    chkEnableVideoDelay = new QCheckBox("启用音画同步缓冲 (自动应用到所有场景)");
+    chkEnableVideoDelay->setToolTip("开启后，将自动向所有场景添加音画同步滤镜。\n关闭后，将从所有场景移除该滤镜。");
+    layoutAudio->addRow("", chkEnableVideoDelay);
+    
+    lblVideoMemory = new QLabel("当前音画同步显存占用: 0.0 MB");
+    lblVideoMemory->setStyleSheet("color: #888; font-style: italic;");
+    layoutAudio->addRow("", lblVideoMemory);
+    
     mainLayout->addWidget(grpAudio);
     
     // Words Group
@@ -215,21 +235,32 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     
     // Buttons
     QHBoxLayout *btnLayout = new QHBoxLayout();
-    QPushButton *btnSave = new QPushButton("保存并应用");
+    QPushButton *btnSave = new QPushButton("确定");
+    QPushButton *btnApply = new QPushButton("应用");
     QPushButton *btnCancel = new QPushButton("取消");
     
     connect(btnSave, &QPushButton::clicked, this, &ConfigDialog::onSave);
+    connect(btnApply, &QPushButton::clicked, this, &ConfigDialog::onApply);
     connect(btnCancel, &QPushButton::clicked, this, &ConfigDialog::reject);
     
     btnLayout->addStretch();
     btnLayout->addWidget(btnSave);
+    btnLayout->addWidget(btnApply);
     btnLayout->addWidget(btnCancel);
     mainLayout->addLayout(btnLayout);
     
     LoadToUI();
+    
+    // Status Timer
+    statusTimer = new QTimer(this);
+    connect(statusTimer, &QTimer::timeout, this, &ConfigDialog::updateStatus);
+    statusTimer->start(1000); // Update every 1 second
+    updateStatus();
 }
 
-ConfigDialog::~ConfigDialog() {}
+ConfigDialog::~ConfigDialog() {
+    if (statusTimer) statusTimer->stop();
+}
 
 void ConfigDialog::LoadToUI() {
     GlobalConfig *cfg = GetGlobalConfig();
@@ -243,6 +274,24 @@ void ConfigDialog::LoadToUI() {
     spinBeepFreq->setValue(cfg->beep_frequency);
     spinBeepMix->setValue(cfg->beep_mix_percent);
     editLogPath->setText(QString::fromStdString(cfg->debug_log_path));
+    chkEnableVideoDelay->setChecked(cfg->video_delay_enabled);
+}
+
+void ConfigDialog::updateStatus() {
+    double mb = VideoDelayFilter::total_memory_mb.load();
+    QString text = QString("当前音画同步显存占用: %1 MB").arg(mb, 0, 'f', 1);
+    
+    if (mb < 0.1 && chkEnableVideoDelay->isChecked()) {
+        text += " (待机中)";
+    }
+    
+    if (mb > 1000.0) {
+        text += " (⚠️ 高占用)";
+        lblVideoMemory->setStyleSheet("color: red; font-weight: bold;");
+    } else {
+        lblVideoMemory->setStyleSheet("color: #888; font-style: italic;");
+    }
+    lblVideoMemory->setText(text);
 }
 
 void ConfigDialog::onBrowseModel() {
@@ -259,11 +308,14 @@ void ConfigDialog::onBrowseLog() {
     }
 }
 
-void ConfigDialog::onSave() {
+void ConfigDialog::onApply() {
     GlobalConfig *cfg = GetGlobalConfig();
     
+    bool old_enabled_state;
     {
         lock_guard<std::mutex> lock(cfg->mutex);
+        old_enabled_state = cfg->video_delay_enabled;
+
         cfg->model_path = editModelPath->text().toStdString();
         cfg->delay_seconds = spinDelay->value() / 1000.0;
         cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
@@ -272,9 +324,19 @@ void ConfigDialog::onSave() {
         cfg->beep_frequency = spinBeepFreq->value();
         cfg->beep_mix_percent = spinBeepMix->value();
         cfg->debug_log_path = editLogPath->text().toStdString();
+        cfg->video_delay_enabled = chkEnableVideoDelay->isChecked();
     }
     
     cfg->Save();
+    
+    // Apply state change ONLY if switch toggled
+    if (old_enabled_state != cfg->video_delay_enabled) {
+        UpdateVideoDelayFiltersState();
+    }
+}
+
+void ConfigDialog::onSave() {
+    onApply();
     accept();
 }
 
@@ -289,19 +351,20 @@ void FreeGlobalConfig() {
     }
 }
 
-void FreeConfigDialog() {
-    if (g_dialog) {
-        delete g_dialog;
-    }
-}
+void SetGlobalConfigModule(obs_module_t *module);
 
 void OpenGlobalConfigDialog() {
     if (!g_dialog) {
-        QWidget *mainWindow = (QWidget*)obs_frontend_get_main_window();
-        g_dialog = new ConfigDialog(mainWindow);
+        g_dialog = new ConfigDialog(nullptr); // Parent is null for top-level
+        g_dialog->setAttribute(Qt::WA_DeleteOnClose);
     }
-    g_dialog->LoadToUI();
     g_dialog->show();
     g_dialog->raise();
     g_dialog->activateWindow();
+}
+
+void FreeConfigDialog() {
+    if (g_dialog) {
+        g_dialog->close();
+    }
 }
