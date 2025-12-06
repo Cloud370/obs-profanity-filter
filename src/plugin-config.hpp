@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
+#include <QComboBox>
 #include <QTextEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -34,11 +35,13 @@ struct GlobalConfig {
     std::string model_path;
     double delay_seconds = 0.5;
     std::string dirty_words_str; // Comma separated
-    bool mute_mode = false;
+    bool mute_mode = false; // Deprecated, mapped to audio_effect
+    int audio_effect = 0; // 0=Beep, 1=Silence, 2=Squeaky, 3=Robot
     int beep_frequency = 1000;
     int beep_mix_percent = 100;
     std::string debug_log_path;
     bool use_pinyin = true;
+    bool comedy_mode = false;
     bool video_delay_enabled = true;
     
     // Parsed State
@@ -74,10 +77,10 @@ private:
     QLineEdit *editModelPath;
     QSpinBox *spinDelay;
     QTextEdit *editDirtyWords; // Use TextEdit for multiline
-    QCheckBox *chkMuteMode;
+    QCheckBox *chkMuteMode; // Deprecated UI, replaced by comboEffect
+    QComboBox *comboEffect;
     QCheckBox *chkUsePinyin;
-    QSpinBox *spinBeepFreq;
-    QSpinBox *spinBeepMix;
+    QCheckBox *chkComedyMode;
     QLineEdit *editLogPath;
     QCheckBox *chkEnableVideoDelay;
     QLabel *lblVideoMemory;

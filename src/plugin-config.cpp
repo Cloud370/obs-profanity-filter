@@ -53,7 +53,9 @@ void GlobalConfig::Save() {
         obs_data_set_double(data, "delay_seconds", delay_seconds);
         obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
         obs_data_set_bool(data, "use_pinyin", use_pinyin);
+        obs_data_set_bool(data, "comedy_mode", comedy_mode);
         obs_data_set_bool(data, "mute_mode", mute_mode);
+        obs_data_set_int(data, "audio_effect", audio_effect);
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
         obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
@@ -121,17 +123,38 @@ void GlobalConfig::Load() {
         dirty_words_str = s ? s : "卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
         
         use_pinyin = obs_data_get_bool(data, "use_pinyin");
+        
+        if (obs_data_has_user_value(data, "comedy_mode")) {
+            comedy_mode = obs_data_get_bool(data, "comedy_mode");
+        } else {
+            comedy_mode = false;
+        }
 
         mute_mode = obs_data_get_bool(data, "mute_mode");
+        if (obs_data_has_user_value(data, "audio_effect")) {
+            audio_effect = obs_data_get_int(data, "audio_effect");
+        } else {
+            // Migration
+            audio_effect = mute_mode ? 1 : 0; // 1=Silence, 0=Beep
+        }
+
+        // Deprecated: Force defaults to ensure consistency now that UI is removed
+        // We ignore saved values for frequency and mix to prevent users from being stuck with bad hidden settings
+        beep_frequency = 1000; 
+        /*
         beep_frequency = obs_data_get_int(data, "beep_freq");
         if (beep_frequency < 200) beep_frequency = 1000;
+        */
 
+        beep_mix_percent = 100;
+        /*
         if (obs_data_has_user_value(data, "beep_mix")) {
             beep_mix_percent = obs_data_get_int(data, "beep_mix");
             if (beep_mix_percent < 0 || beep_mix_percent > 100) beep_mix_percent = 100;
         } else {
             beep_mix_percent = 100;
         }
+        */
         
         s = obs_data_get_string(data, "debug_log_path");
         debug_log_path = s ? s : "";
@@ -198,22 +221,20 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     spinDelay->setSingleStep(50);
     spinDelay->setSuffix(" ms");
     
-    chkMuteMode = new QCheckBox("静音模式 (不播放哔声)");
+    // Audio Effect Selection
+    comboEffect = new QComboBox();
+    comboEffect->addItem("标准哔声 (Beep)", 0);
+    comboEffect->addItem("静音 (Silence)", 1);
+    comboEffect->addItem("小黄人音效 (Minion)", 2);
+    comboEffect->addItem("电报音效 (Telegraph)", 3);
     
-    spinBeepFreq = new QSpinBox();
-    spinBeepFreq->setRange(200, 5000);
-    spinBeepFreq->setSingleStep(100);
-    spinBeepFreq->setSuffix(" Hz");
-
-    spinBeepMix = new QSpinBox();
-    spinBeepMix->setRange(0, 100);
-    spinBeepMix->setSingleStep(5);
-    spinBeepMix->setSuffix(" %");
+    // Deprecated UI elements for beep frequency/mix removed as per user request
+    // spinBeepFreq & spinBeepMix are removed
     
     layoutAudio->addRow("全局延迟时间:", spinDelay);
-    layoutAudio->addRow("", chkMuteMode);
-    layoutAudio->addRow("哔声频率:", spinBeepFreq);
-    layoutAudio->addRow("哔声/静音混合比例:", spinBeepMix);
+    layoutAudio->addRow("屏蔽音效:", comboEffect);
+    // layoutAudio->addRow("哔声频率:", spinBeepFreq);
+    // layoutAudio->addRow("哔声/静音混合比例:", spinBeepMix);
     
     chkEnableVideoDelay = new QCheckBox("启用音画同步缓冲 (自动应用到所有场景)");
     chkEnableVideoDelay->setToolTip("开启后，将自动向所有场景添加音画同步滤镜。\n关闭后，将从所有场景移除该滤镜。");
@@ -236,6 +257,10 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     chkUsePinyin = new QCheckBox("启用拼音增强识别 (模糊匹配)");
     chkUsePinyin->setToolTip("开启后将使用拼音进行匹配，忽略声调和平卷舌差异，提高识别率。");
     layoutWords->addWidget(chkUsePinyin);
+
+    chkComedyMode = new QCheckBox("精准变声模式 (优先匹配短词)");
+    chkComedyMode->setToolTip("开启后，当匹配到多个词时（如'我爱你'和'爱你'），\n优先只屏蔽较短的词（'爱你'），从而保留'我'的原声。\n配合变音特效可实现更生动的喜剧效果。");
+    layoutWords->addWidget(chkComedyMode);
 
     containerLayout->addWidget(grpWords);
     
@@ -303,9 +328,15 @@ void ConfigDialog::LoadToUI() {
     spinDelay->setValue((int)(cfg->delay_seconds * 1000));
     editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
     chkUsePinyin->setChecked(cfg->use_pinyin);
-    chkMuteMode->setChecked(cfg->mute_mode);
-    spinBeepFreq->setValue(cfg->beep_frequency);
-    spinBeepMix->setValue(cfg->beep_mix_percent);
+    chkComedyMode->setChecked(cfg->comedy_mode);
+    
+    // Map audio_effect to combo
+    int effect_idx = comboEffect->findData(cfg->audio_effect);
+    if (effect_idx != -1) comboEffect->setCurrentIndex(effect_idx);
+    else comboEffect->setCurrentIndex(0); // Default to Beep
+
+    // spinBeepFreq->setValue(cfg->beep_frequency);
+    // spinBeepMix->setValue(cfg->beep_mix_percent);
     editLogPath->setText(QString::fromStdString(cfg->debug_log_path));
     chkEnableVideoDelay->setChecked(cfg->video_delay_enabled);
 }
@@ -356,9 +387,13 @@ void ConfigDialog::onApply() {
         cfg->delay_seconds = spinDelay->value() / 1000.0;
         cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
         cfg->use_pinyin = chkUsePinyin->isChecked();
-        cfg->mute_mode = chkMuteMode->isChecked();
-        cfg->beep_frequency = spinBeepFreq->value();
-        cfg->beep_mix_percent = spinBeepMix->value();
+        cfg->comedy_mode = chkComedyMode->isChecked();
+        
+        cfg->audio_effect = comboEffect->currentData().toInt();
+        cfg->mute_mode = (cfg->audio_effect == 1); // Backward compat
+
+        // cfg->beep_frequency = spinBeepFreq->value();
+        // cfg->beep_mix_percent = spinBeepMix->value();
         cfg->debug_log_path = editLogPath->text().toStdString();
         cfg->video_delay_enabled = chkEnableVideoDelay->isChecked();
     }

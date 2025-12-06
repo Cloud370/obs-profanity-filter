@@ -37,6 +37,7 @@ public:
     // Audio Buffer
     struct ChannelBuffer {
         std::vector<float> buffer;
+        std::vector<float> clean_buffer; // Stores original audio for effect lookback
         size_t head = 0; 
         uint64_t total_written = 0;
     };
@@ -60,6 +61,7 @@ public:
     struct BeepRange {
         uint64_t start_sample; 
         uint64_t end_sample;
+        uint64_t original_start;
     };
     std::mutex beep_mutex;
     std::vector<BeepRange> pending_beeps;

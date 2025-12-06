@@ -304,11 +304,13 @@ void ProfanityFilter::ASRLoop() {
                 GlobalConfig *cfg = GetGlobalConfig();
                 vector<regex> patterns;
                 bool use_pinyin;
+                bool comedy_mode;
                 string current_dirty_words;
                 {
                     lock_guard<mutex> lock(cfg->mutex);
                     patterns = cfg->dirty_patterns; // Copy
                     use_pinyin = cfg->use_pinyin;
+                    comedy_mode = cfg->comedy_mode;
                     current_dirty_words = cfg->dirty_words_str;
                 }
                 
@@ -324,6 +326,16 @@ void ProfanityFilter::ASRLoop() {
                         }
                     }
 
+                    // Collect Candidates
+                    struct MatchCandidate {
+                        size_t start_char;
+                        uint64_t start_sample;
+                        uint64_t end_sample;
+                        string log_text;
+                        bool is_pinyin;
+                    };
+                    vector<MatchCandidate> candidates;
+
                     // 1. Regex Matching
                     for (const auto& pattern : patterns) {
                         sregex_iterator begin(full_text.begin(), full_text.end(), pattern);
@@ -332,8 +344,7 @@ void ProfanityFilter::ASRLoop() {
                         for (auto i = begin; i != end; ++i) {
                             smatch match = *i;
                             size_t m_start_char = match.position();
-                            if (processed_matches.count(m_start_char)) continue;
-
+                            
                             // Find timestamps
                             float m_start_time = -1.0f;
                             float m_end_time = -1.0f;
@@ -361,19 +372,12 @@ void ProfanityFilter::ASRLoop() {
                                 uint64_t start_abs = (uint64_t)(start_16k * current_ratio) + start_offset_input;
                                 uint64_t end_abs = (uint64_t)(end_16k * current_ratio) + start_offset_input;
                                 
-                                // Safe margin: 50ms = 0.05 * sr
-                                uint32_t margin = (uint32_t)(0.05 * current_sr);
+                                // Safe margin: 150ms = 0.15 * sr (Reduced from 400ms to avoid false positives)
+                                uint32_t margin = (uint32_t)(0.15 * current_sr);
                                 start_abs = (start_abs > margin) ? start_abs - margin : 0; 
                                 end_abs += margin; 
                                 
-                                lock_guard<mutex> b_lock(beep_mutex);
-                                pending_beeps.push_back({start_abs, end_abs});
-                                
-                                stringstream ss;
-                                ss << "已屏蔽: " << match.str();
-                                LogToFile(ss.str());
-                                
-                                processed_matches.insert(m_start_char);
+                                candidates.push_back({m_start_char, start_abs, end_abs, match.str(), false});
                             }
                         }
                     }
@@ -412,8 +416,6 @@ void ProfanityFilter::ASRLoop() {
                                                 dict_path = p_next.string();
                                             } else {
                                                 // 2. Check standard plugin structure (root/data/dict)
-                                                // DLL: root/bin/64bit/plugin.dll
-                                                // Dict: root/data/dict
                                                 filesystem::path p_bundle = p.parent_path().parent_path().parent_path() / "data" / "dict";
                                                 if (filesystem::exists(p_bundle)) {
                                                     dict_path = p_bundle.string();
@@ -520,9 +522,6 @@ void ProfanityFilter::ASRLoop() {
                                         size_t char_pos = 0;
                                         for(int k=0; k<start_token; k++) char_pos += string(result->tokens_arr[k]).length();
                                         
-                                        // Avoid double blocking (if regex already caught it)
-                                        if (processed_matches.count(char_pos)) continue;
-                                        
                                         float start_time = result->timestamps[start_token];
                                         float end_time = (end_token < result->count - 1) ? result->timestamps[end_token+1] : (result->timestamps[end_token] + 0.2f);
                                         
@@ -532,13 +531,10 @@ void ProfanityFilter::ASRLoop() {
                                         uint64_t start_abs = (uint64_t)(start_16k * current_ratio) + start_offset_input;
                                         uint64_t end_abs = (uint64_t)(end_16k * current_ratio) + start_offset_input;
                                         
-                                        // Safe margin: 50ms = 0.05 * sr
-                                        uint32_t margin = (uint32_t)(0.05 * current_sr);
+                                        // Safe margin: 150ms = 0.15 * sr
+                                        uint32_t margin = (uint32_t)(0.15 * current_sr);
                                         start_abs = (start_abs > margin) ? start_abs - margin : 0; 
                                         end_abs += margin; 
-                                        
-                                        lock_guard<mutex> b_lock(beep_mutex);
-                                        pending_beeps.push_back({start_abs, end_abs});
                                         
                                         stringstream ss;
                                         ss << "已屏蔽(拼音): ";
@@ -546,13 +542,51 @@ void ProfanityFilter::ASRLoop() {
                                         ss << "[匹配源: ";
                                         for(int k=0; k<pat.size(); k++) ss << text_pinyins[i+k] << " ";
                                         ss << "]";
-                                        LogToFile(ss.str());
                                         
-                                        processed_matches.insert(char_pos);
+                                        candidates.push_back({char_pos, start_abs, end_abs, ss.str(), true});
                                     }
                                 }
                             }
                         }
+                    }
+
+                    // 3. Sort and Apply Candidates
+                    if (comedy_mode) {
+                        // Comedy Mode: Shortest First
+                        sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b){
+                            return (a.end_sample - a.start_sample) < (b.end_sample - b.start_sample);
+                        });
+                    } else {
+                        // Normal Mode: Longest First (Cover max area)
+                        sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b){
+                            return (a.end_sample - a.start_sample) > (b.end_sample - b.start_sample);
+                        });
+                    }
+
+                    vector<pair<uint64_t, uint64_t>> covered_intervals;
+                    for(const auto& m : candidates) {
+                        // Skip if already processed in previous frames
+                        if (processed_matches.count(m.start_char)) continue;
+                        
+                        // Check overlap with currently selected candidates in this frame
+                        bool overlap = false;
+                        for(const auto& interval : covered_intervals) {
+                            if (m.start_sample < interval.second && m.end_sample > interval.first) {
+                                overlap = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!overlap) {
+                            lock_guard<mutex> b_lock(beep_mutex);
+                            pending_beeps.push_back({m.start_sample, m.end_sample, m.start_sample});
+                            LogToFile(m.log_text);
+                            
+                            covered_intervals.push_back({m.start_sample, m.end_sample});
+                        }
+                        
+                        // Always mark as processed to prevent re-evaluation or double-application
+                        processed_matches.insert(m.start_char);
                     }
                 }
                 SherpaOnnxDestroyOnlineRecognizerResult(result);
@@ -585,7 +619,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
     GlobalConfig *cfg = GetGlobalConfig();
     double global_delay;
     string global_model;
-    bool global_mute;
+    int global_effect; // 0=Beep, 1=Silence, 2=Squeaky, 3=Robot
     int global_freq;
     int global_mix;
     bool global_enable;
@@ -594,7 +628,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
         lock_guard<mutex> lock(cfg->mutex);
         global_delay = cfg->delay_seconds;
         global_model = cfg->model_path;
-        global_mute = cfg->mute_mode;
+        global_effect = cfg->audio_effect;
         global_freq = cfg->beep_frequency;
         global_mix = cfg->beep_mix_percent;
         global_enable = cfg->global_enable;
@@ -671,6 +705,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
         size_t buf_size = current_sr * 12; // Max 12s
         for (auto& ch : channels) {
             ch.buffer.resize(buf_size, 0.0f);
+            ch.clean_buffer.resize(buf_size, 0.0f);
         }
     }
     
@@ -686,6 +721,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
                 for (auto& ch : channels) {
                     vector<float> new_buf(new_size, 0.0f);
                     ch.buffer = new_buf;
+                    ch.clean_buffer = new_buf;
                     ch.head = 0;
                 }
             }
@@ -700,6 +736,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
         auto& ch = channels[c];
         for (size_t i = 0; i < frames; i++) {
             ch.buffer[ch.head] = data_in[i];
+            ch.clean_buffer[ch.head] = data_in[i];
             ch.head = (ch.head + 1) % current_buf_size;
             ch.total_written++;
         }
@@ -742,6 +779,32 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
                 
                 for (size_t c = 0; c < channels_count; c++) {
                     auto& ch = channels[c];
+                    
+                    // Minion Effect: Pre-fetch original audio to avoid feedback loop
+                    // Only needed for global_effect == 2
+                    std::vector<float> temp_source;
+                    uint64_t temp_start_idx = 0;
+                    if (global_effect == 2) {
+                        uint64_t window_size = 2048; // Approx 40ms
+                        // Ensure we have enough history for pitch shifter lookback
+                        uint64_t safe_start = (start > window_size) ? start - window_size : 0;
+                        // Check buffer limits (don't go before what we have)
+                        if (safe_start < current_write_pos - current_buf_size) {
+                             safe_start = current_write_pos - current_buf_size;
+                        }
+                        
+                        temp_start_idx = safe_start;
+                        size_t len = (size_t)(end - safe_start);
+                        temp_source.resize(len);
+                        
+                        for(size_t k=0; k<len; k++) {
+                             uint64_t s_abs = safe_start + k;
+                             size_t diff = (size_t)(current_write_pos - s_abs);
+                             size_t idx = (ch.head + current_buf_size - (diff % current_buf_size)) % current_buf_size;
+                             temp_source[k] = ch.clean_buffer[idx];
+                        }
+                    }
+
                     for (uint64_t s = start; s < end; s++) {
                         if (s >= current_write_pos) break; 
                         if (s < current_write_pos - current_buf_size) continue;
@@ -750,14 +813,70 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
                         size_t idx = (ch.head + current_buf_size - (diff % current_buf_size)) % current_buf_size;
                         
                         float val = 0.0f;
-                        if (!global_mute) {
-                        double cycles = (double)s * (double)global_freq / (double)current_sr;
-                        double phase = cycles - floor(cycles);
-                        val = 0.1f * (float)sin(2.0 * 3.14159265358979323846 * phase);
+                        float original = ch.buffer[idx];
+                        float mix = (float)global_mix / 100.0f;
+
+                        if (global_effect == 1) { // Silence
+                             val = 0.0f;
+                        } else if (global_effect == 2) { // Minion (Pitch Shifter)
+                             // Barberpole Pitch Shifter
+                             // Pitch Ratio: 2.0 (Octave up) for sharper Minion sound
+                             double pitch_ratio = 2.0;
+                             double window_size = 2048.0; // Must match pre-fetch window approx
+                             
+                             // Phase runs 0..1
+                             double speed = pitch_ratio - 1.0;
+                             double phase = (double)(s % (uint64_t)(window_size / speed)) * speed / window_size;
+                             phase -= floor(phase);
+
+                             // Delay decreases from window_size to 0 for Pitch Up
+                             double delay_A = (1.0 - phase) * window_size;
+                             double delay_B = (1.0 - ((phase + 0.5) - floor(phase + 0.5))) * window_size;
+                             
+                             // Read from temp_source
+                             // temp_source[0] corresponds to temp_start_idx
+                             // Current time s corresponds to index (s - temp_start_idx)
+                             // We want to read at (s - delay)
+                             
+                             int64_t read_idx_A = (int64_t)(s - temp_start_idx) - (int64_t)delay_A;
+                             int64_t read_idx_B = (int64_t)(s - temp_start_idx) - (int64_t)delay_B;
+                             
+                             float sample_A = 0.0f;
+                             float sample_B = 0.0f;
+                             
+                             if (read_idx_A >= 0 && read_idx_A < (int64_t)temp_source.size()) sample_A = temp_source[read_idx_A];
+                             if (read_idx_B >= 0 && read_idx_B < (int64_t)temp_source.size()) sample_B = temp_source[read_idx_B];
+                             
+                             // Triangle Window
+                             float gain_A = 1.0f - 2.0f * (float)fabs(phase - 0.5);
+                             float gain_B = 1.0f - 2.0f * (float)fabs(((phase + 0.5) - floor(phase + 0.5)) - 0.5);
+                             
+                             val = sample_A * gain_A + sample_B * gain_B;
+                             mix = 1.0f; // Force wet mix for voice change
+                        } else if (global_effect == 3) { // Telegraph (Morse Code Style)
+                             double t = (double)s / (double)current_sr;
+                             
+                             // Carrier: 750Hz Sine Wave (Classic CW tone)
+                             double carrier = sin(2.0 * 3.14159265358979323846 * 750.0 * t);
+                             
+                             // Pseudo-random Morse Pattern Generator
+                             // Use sine waves at different prime frequencies to create a non-repeating pattern of "dits" and "dahs"
+                             // 8Hz = fast dits, 3Hz = word spacing rhythm
+                             double rhythm = sin(2.0 * 3.14159265358979323846 * 8.0 * t) + 
+                                             sin(2.0 * 3.14159265358979323846 * 3.0 * t);
+                             
+                             // Threshold to create on/off keying
+                             // If rhythm > 0, tone is ON. Else OFF.
+                             float envelope = (rhythm > 0.0) ? 1.0f : 0.0f;
+                             
+                             val = 0.15f * (float)carrier * envelope;
+                             mix = 1.0f; // Force 100% replacement
+                        } else { // Default: Beep
+                             double cycles = (double)s * (double)global_freq / (double)current_sr;
+                             double phase = cycles - floor(cycles);
+                             val = 0.1f * (float)sin(2.0 * 3.14159265358979323846 * phase);
                         }
                         
-                        float mix = (float)global_mix / 100.0f;
-                        float original = ch.buffer[idx];
                         ch.buffer[idx] = (val * mix) + (original * (1.0f - mix));
                     }
                 }
