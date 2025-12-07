@@ -37,8 +37,9 @@ struct GlobalConfig {
     bool global_enable = true;
     std::string model_path;
     double delay_seconds = 0.5;
-    std::string dirty_words_str; // Comma separated
-    bool mute_mode = false; // Deprecated, mapped to audio_effect
+    std::string dirty_words_str; // Combined (for internal use)
+    std::string system_dirty_words_str; // Read-only built-in
+    std::string user_dirty_words_str;   // User custom
     int audio_effect = 0; // 0=Beep, 1=Silence, 2=Squeaky, 3=Robot
     int beep_frequency = 1000;
     int beep_mix_percent = 100;
@@ -90,7 +91,12 @@ private:
     PluginModelManager *modelManager;
     
     QSpinBox *spinDelay;
-    QTextEdit *editDirtyWords; // Use TextEdit for multiline
+    QTextEdit *editDirtyWords; // User Custom Words
+    QTextEdit *editSystemDirtyWords; // System Built-in Words (Read-only)
+    QCheckBox *chkHideDirtyWords;
+    QString m_cachedUserWords;
+    QString m_cachedSystemWords;
+    
     QCheckBox *chkMuteMode; // Deprecated UI, replaced by comboEffect
     QComboBox *comboEffect;
     QCheckBox *chkUsePinyin;

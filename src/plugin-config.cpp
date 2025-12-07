@@ -12,6 +12,10 @@
 
 using namespace std;
 
+// Unified default dirty words list definition removed.
+// The system dirty words list is now loaded from data/builtin_dirty_words.txt at runtime.
+
+
 static GlobalConfig* g_config = nullptr;
 static obs_module_t* g_module = nullptr;
 static QPointer<ConfigDialog> g_dialog;
@@ -29,7 +33,18 @@ void SetGlobalConfigModule(obs_module_t *module) {
 
 void GlobalConfig::ParsePatterns() {
     dirty_patterns.clear();
-    stringstream ss(dirty_words_str);
+    
+    // Combine system and user dirty words
+    std::string combined = system_dirty_words_str;
+    if (!combined.empty() && !user_dirty_words_str.empty()) {
+        combined += ", ";
+    }
+    combined += user_dirty_words_str;
+    
+    // Update the legacy string just in case
+    dirty_words_str = combined;
+
+    stringstream ss(combined);
     string item;
     while (getline(ss, item, ',')) {
         // Trim
@@ -46,6 +61,7 @@ void GlobalConfig::ParsePatterns() {
 void GlobalConfig::Save() {
     obs_data_t *data = obs_data_create();
     string path_to_save;
+    string custom_words_path;
     
     {
         lock_guard<std::mutex> lock(this->mutex);
@@ -53,16 +69,39 @@ void GlobalConfig::Save() {
         obs_data_set_bool(data, "global_enable", global_enable);
         obs_data_set_string(data, "model_path", model_path.c_str());
         obs_data_set_double(data, "delay_seconds", delay_seconds);
-        obs_data_set_string(data, "dirty_words", dirty_words_str.c_str());
+        // dirty_words stored in external files now
         obs_data_set_bool(data, "use_pinyin", use_pinyin);
         obs_data_set_bool(data, "comedy_mode", comedy_mode);
-        obs_data_set_bool(data, "mute_mode", mute_mode);
         obs_data_set_int(data, "audio_effect", audio_effect);
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
         obs_data_set_bool(data, "video_delay_enabled", video_delay_enabled);
         
         ParsePatterns();
+    }
+    
+    // Save Custom Dirty Words to custom_dirty_words.txt
+    if (g_module) {
+        char *p = obs_module_get_config_path(g_module, "custom_dirty_words.txt");
+        if (p) {
+            filesystem::path txtPath(p);
+            bfree(p);
+            
+            if (txtPath.has_parent_path()) {
+                try {
+                    filesystem::create_directories(txtPath.parent_path());
+                } catch(...) {}
+            }
+            
+            try {
+                ofstream f(txtPath, ios::binary);
+                if (f.is_open()) {
+                    unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
+                    f.write((char*)bom, 3);
+                    f << user_dirty_words_str;
+                }
+            } catch(...) {}
+        }
     }
     
     if (g_module) {
@@ -89,23 +128,87 @@ void GlobalConfig::Save() {
 void GlobalConfig::Load() {
     lock_guard<std::mutex> lock(this->mutex);
     
-    string path;
-    if (g_module) {
-        char *config_path = obs_module_get_config_path(g_module, "global_config.json");
-        if (config_path) {
-            path = config_path;
-            bfree(config_path);
+    // Helper to get config path
+    auto get_config_path = [](const char* filename) -> string {
+        string res;
+        if (g_module) {
+            char *p = obs_module_get_config_path(g_module, filename);
+            if (p) {
+                res = p;
+                bfree(p);
+            }
         }
+        return res;
+    };
+    
+    // Helper to read file
+    auto read_file = [](const string& path) -> string {
+        if (path.empty() || !filesystem::exists(path)) return "";
+        try {
+            ifstream f(path);
+            if (f.is_open()) {
+                stringstream buffer;
+                buffer << f.rdbuf();
+                return buffer.str();
+            }
+        } catch(...) {}
+        return "";
+    };
+
+    // Helper to write file
+    auto write_file = [](const string& path, const string& content) {
+        if (path.empty()) return;
+        filesystem::path p(path);
+        if (p.has_parent_path()) {
+            try { filesystem::create_directories(p.parent_path()); } catch(...) {}
+        }
+        try {
+            ofstream f(path, ios::binary);
+            if (f.is_open()) {
+                unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
+                f.write((char*)bom, 3);
+                f << content;
+                f.close();
+            }
+        } catch(...) {}
+    };
+
+    // 1. Handle System Dirty Words (builtin_dirty_words.txt)
+    // Load from plugin installation directory (read-only system list)
+    char *builtin_path = obs_find_module_file(g_module, "data/builtin_dirty_words.txt");
+    if (!builtin_path) {
+         builtin_path = obs_find_module_file(g_module, "builtin_dirty_words.txt");
     }
     
-    if (path.empty() || !filesystem::exists(path)) {
-        // Fallback defaults
-        dirty_words_str = "卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
+    if (builtin_path) {
+        system_dirty_words_str = read_file(builtin_path);
+        bfree(builtin_path);
+    } else {
+        system_dirty_words_str = ""; 
+    }
+    
+    // 2. Handle User/Custom Dirty Words
+    string custom_path = get_config_path("custom_dirty_words.txt");
+    
+    if (filesystem::exists(custom_path)) {
+        user_dirty_words_str = read_file(custom_path);
+    } else {
+        // First run, empty custom list
+        user_dirty_words_str = "";
+        write_file(custom_path, ""); 
+    }
+
+    // 3. Load JSON config
+    string json_path = get_config_path("global_config.json");
+    
+    if (json_path.empty() || !filesystem::exists(json_path)) {
+        video_delay_enabled = true;
+        is_first_run = true;
         ParsePatterns();
         return;
     }
     
-    obs_data_t *data = obs_data_create_from_json_file(path.c_str());
+    obs_data_t *data = obs_data_create_from_json_file(json_path.c_str());
     
     if (data) {
         if (obs_data_has_user_value(data, "global_enable")) {
@@ -120,43 +223,29 @@ void GlobalConfig::Load() {
         delay_seconds = obs_data_get_double(data, "delay_seconds");
         if (delay_seconds < 0.01) delay_seconds = 0.5;
         
-        s = obs_data_get_string(data, "dirty_words");
-        dirty_words_str = s ? s : "卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
-        
         use_pinyin = obs_data_get_bool(data, "use_pinyin");
         
         if (obs_data_has_user_value(data, "comedy_mode")) {
             comedy_mode = obs_data_get_bool(data, "comedy_mode");
-        } else {
-            comedy_mode = false;
         }
 
-        mute_mode = obs_data_get_bool(data, "mute_mode");
         if (obs_data_has_user_value(data, "audio_effect")) {
             audio_effect = obs_data_get_int(data, "audio_effect");
-        } else {
-            // Migration
-            audio_effect = mute_mode ? 1 : 0; // 1=Silence, 0=Beep
         }
-
-        // Deprecated: Force defaults to ensure consistency now that UI is removed
-        // We ignore saved values for frequency and mix to prevent users from being stuck with bad hidden settings
-        beep_frequency = 1000; 
         
-        beep_mix_percent = 100;
+        if (obs_data_has_user_value(data, "beep_freq")) {
+            beep_frequency = obs_data_get_int(data, "beep_freq");
+        }
+        
+        if (obs_data_has_user_value(data, "beep_mix")) {
+            beep_mix_percent = obs_data_get_int(data, "beep_mix");
+        }
         
         if (obs_data_has_user_value(data, "video_delay_enabled")) {
             video_delay_enabled = obs_data_get_bool(data, "video_delay_enabled");
-        } else {
-            video_delay_enabled = true;
         }
 
         obs_data_release(data);
-    } else {
-        // Defaults
-        dirty_words_str = "fuck, shit, bitch, 卧槽, 他妈, 傻逼, 操, 逼的, 你妈, 死全家";
-        video_delay_enabled = true;
-        is_first_run = true;
     }
     
     ParsePatterns();
@@ -283,9 +372,47 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     QGroupBox *grpWords = new QGroupBox("屏蔽词设置");
     QVBoxLayout *layoutWords = new QVBoxLayout(grpWords);
     
-    layoutWords->addWidget(new QLabel("屏蔽词列表 (逗号分隔):"));
+    // Header for Custom Words
+    QHBoxLayout *headerLayout = new QHBoxLayout();
+    headerLayout->addWidget(new QLabel("自定义屏蔽词 (逗号分隔):"));
+    chkHideDirtyWords = new QCheckBox("隐藏内容 (密码模式)");
+    chkHideDirtyWords->setToolTip("勾选后将隐藏下方自定义屏蔽词内容，防止直播时意外泄露。");
+    headerLayout->addWidget(chkHideDirtyWords);
+    headerLayout->addStretch();
+    layoutWords->addLayout(headerLayout);
+
     editDirtyWords = new QTextEdit();
     layoutWords->addWidget(editDirtyWords);
+    
+    connect(chkHideDirtyWords, &QCheckBox::toggled, this, [this](bool checked){
+        if (checked) {
+            // Hide User Words
+            m_cachedUserWords = editDirtyWords->toPlainText();
+            editDirtyWords->setText("****************** (Content Hidden / 内容已隐藏) ******************");
+            editDirtyWords->setReadOnly(true);
+            editDirtyWords->setStyleSheet("color: #888; font-style: italic; background-color: #f0f0f0;");
+            
+            // Hide System Words
+            m_cachedSystemWords = editSystemDirtyWords->toPlainText();
+            editSystemDirtyWords->setText("****************** (Content Hidden / 内容已隐藏) ******************");
+        } else {
+            // Show User Words
+            editDirtyWords->setText(m_cachedUserWords);
+            editDirtyWords->setReadOnly(false);
+            editDirtyWords->setStyleSheet("");
+            
+            // Show System Words
+            editSystemDirtyWords->setText(m_cachedSystemWords);
+        }
+    });
+    
+    // System Words (Read-only)
+    layoutWords->addWidget(new QLabel("系统内置屏蔽词 (只读):"));
+    editSystemDirtyWords = new QTextEdit();
+    editSystemDirtyWords->setReadOnly(true);
+    editSystemDirtyWords->setStyleSheet("color: #666; background-color: #f0f0f0;");
+    editSystemDirtyWords->setMaximumHeight(80); // Smaller height for system words
+    layoutWords->addWidget(editSystemDirtyWords);
     
     chkUsePinyin = new QCheckBox("启用拼音增强识别 (模糊匹配)");
     chkUsePinyin->setToolTip("开启后将使用拼音进行匹配，忽略声调和平卷舌差异，提高识别率。");
@@ -374,7 +501,12 @@ void ConfigDialog::LoadToUI() {
     }
     
     spinDelay->setValue((int)(cfg->delay_seconds * 1000));
-    editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
+    
+    // Ensure we are in visible mode before setting text to avoid overwriting "Hidden" text
+    chkHideDirtyWords->setChecked(false); 
+    editDirtyWords->setText(QString::fromStdString(cfg->user_dirty_words_str));
+    editSystemDirtyWords->setText(QString::fromStdString(cfg->system_dirty_words_str));
+    
     chkUsePinyin->setChecked(cfg->use_pinyin);
     chkComedyMode->setChecked(cfg->comedy_mode);
     
@@ -562,12 +694,17 @@ void ConfigDialog::onApply() {
         cfg->global_enable = chkGlobalEnable->isChecked();
         cfg->model_path = editModelPath->text().toStdString();
         cfg->delay_seconds = spinDelay->value() / 1000.0;
-        cfg->dirty_words_str = editDirtyWords->toPlainText().toStdString();
+        
+        if (chkHideDirtyWords->isChecked()) {
+            cfg->user_dirty_words_str = m_cachedUserWords.toStdString();
+        } else {
+            cfg->user_dirty_words_str = editDirtyWords->toPlainText().toStdString();
+        }
+        
         cfg->use_pinyin = chkUsePinyin->isChecked();
         cfg->comedy_mode = chkComedyMode->isChecked();
         
         cfg->audio_effect = comboEffect->currentData().toInt();
-        cfg->mute_mode = (cfg->audio_effect == 1); // Backward compat
 
         cfg->video_delay_enabled = chkEnableVideoDelay->isChecked();
     }

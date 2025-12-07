@@ -172,6 +172,9 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
     "${CMAKE_CURRENT_SOURCE_DIR}/data/models.json"
     "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/data/models.json"
+    COMMAND ${CMAKE_COMMAND} -E copy
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/builtin_dirty_words.txt"
+    "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/data/builtin_dirty_words.txt"
 )
 
 # Install dependencies
@@ -189,6 +192,7 @@ install(
 
 install(
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/data/models.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/data/builtin_dirty_words.txt"
     DESTINATION "${CMAKE_PROJECT_NAME}/data"
 )
 
