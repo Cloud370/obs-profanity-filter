@@ -1,9 +1,19 @@
 {
   "models": [
     {
-      "name": "Sherpa-ONNX Streaming Zipformer (Bilingual Zh+En)",
+      "name": "[54M]轻量",
+      "url": "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23.zip",
+      "id": "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
+    },
+    {
+      "name": "[357MB]标准",
       "url": "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip",
       "id": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+    },
+    {
+      "name": "[597MB]最强",
+      "url": "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-zh-2025-06-30.zip",
+      "id": "sherpa-onnx-streaming-zipformer-zh-2025-06-30"
     }
   ]
 }

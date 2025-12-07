@@ -64,9 +64,19 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
         blog(LOG_INFO, "No models loaded, using default fallback models");
         models = {
             {
-                "Sherpa-ONNX Streaming Zipformer (Bilingual Zh+En)",
+                "[54M]轻量",
+                "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23.zip",
+                "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
+            },
+            {
+                "[357MB]标准",
                 "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip",
                 "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+            },
+            {
+                "[597MB]最强",
+                "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-zh-2025-06-30.zip",
+                "sherpa-onnx-streaming-zipformer-zh-2025-06-30"
             }
         };
     }
@@ -96,6 +106,18 @@ bool PluginModelManager::IsModelInstalled(const QString &modelId) const {
     // Check if directory exists and is not empty
     QDir dir(path);
     return dir.exists() && !dir.isEmpty();
+}
+
+bool PluginModelManager::DeleteModel(const QString &modelId) {
+    QString path = GetModelPath(modelId);
+    if (path.isEmpty()) return false;
+    
+    QDir dir(path);
+    if (dir.exists()) {
+        blog(LOG_INFO, "Deleting model: %s", path.toStdString().c_str());
+        return dir.removeRecursively();
+    }
+    return false;
 }
 
 void PluginModelManager::DownloadModel(const QString &modelId) {

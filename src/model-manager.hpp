@@ -38,6 +38,9 @@ public:
     // Start downloading a model
     void DownloadModel(const QString &modelId);
     
+    // Delete an installed model
+    bool DeleteModel(const QString &modelId);
+    
     // Cancel current download
     void CancelDownload();
 

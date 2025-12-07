@@ -227,7 +227,7 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     
     QHBoxLayout *boxDownload = new QHBoxLayout();
     btnDownloadModel = new QPushButton("⬇️ 一键下载此模型");
-    connect(btnDownloadModel, &QPushButton::clicked, this, &ConfigDialog::onDownloadModel);
+    connect(btnDownloadModel, &QPushButton::clicked, this, &ConfigDialog::onModelAction);
     progressDownload = new QProgressBar();
     progressDownload->setRange(0, 100);
     progressDownload->setValue(0);
@@ -437,32 +437,51 @@ void ConfigDialog::onModelComboChanged(int index) {
         editModelPath->setText(path);
         
         bool installed = modelManager->IsModelInstalled(id);
-        btnDownloadModel->setVisible(!installed);
-        btnDownloadModel->setEnabled(!installed);
+        btnDownloadModel->setVisible(true);
+        btnDownloadModel->setEnabled(true);
         progressDownload->setVisible(false);
-        lblDownloadStatus->setVisible(false);
         
         if (installed) {
+            btnDownloadModel->setText("🗑️ 删除模型");
             lblDownloadStatus->setText("✅ 已安装 (Ready)");
             lblDownloadStatus->setVisible(true);
         } else {
+            btnDownloadModel->setText("⬇️ 一键下载此模型");
              lblDownloadStatus->setText("⚠️ 未安装 (需要下载)");
              lblDownloadStatus->setVisible(true);
         }
     }
 }
 
-void ConfigDialog::onDownloadModel() {
+void ConfigDialog::onModelAction() {
     QString id = comboModel->currentData().toString();
     if (id == "custom") return;
     
-    btnDownloadModel->setEnabled(false);
-    progressDownload->setValue(0);
-    progressDownload->setVisible(true);
-    lblDownloadStatus->setText("准备下载...");
-    lblDownloadStatus->setVisible(true);
-    
-    modelManager->DownloadModel(id);
+    if (modelManager->IsModelInstalled(id)) {
+        // Delete Action
+        QMessageBox::StandardButton reply;
+        reply = QMessageBox::question(this, "确认删除", 
+            "确定要删除此模型吗?\n此操作将移除模型文件以释放空间。",
+            QMessageBox::Yes | QMessageBox::No);
+            
+        if (reply == QMessageBox::Yes) {
+            if (modelManager->DeleteModel(id)) {
+                // Update UI immediately
+                onModelComboChanged(comboModel->currentIndex());
+            } else {
+                QMessageBox::critical(this, "删除失败", "无法删除模型文件夹，可能文件正在被使用。");
+            }
+        }
+    } else {
+        // Download Action
+        btnDownloadModel->setEnabled(false);
+        progressDownload->setValue(0);
+        progressDownload->setVisible(true);
+        lblDownloadStatus->setText("准备下载...");
+        lblDownloadStatus->setVisible(true);
+        
+        modelManager->DownloadModel(id);
+    }
 }
 
 void ConfigDialog::onDownloadProgress(qint64 received, qint64 total) {

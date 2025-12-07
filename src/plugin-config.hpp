@@ -75,7 +75,7 @@ private slots:
     void onApply();
     void updateStatus();
     void onModelComboChanged(int index);
-    void onDownloadModel();
+    void onModelAction();
     void onDownloadProgress(qint64 received, qint64 total);
     void onDownloadFinished(const QString &modelId);
     void onDownloadError(const QString &msg);
