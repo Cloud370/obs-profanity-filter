@@ -164,6 +164,10 @@ void ProfanityFilter::ASRLoop() {
     // Time sync
     uint64_t start_offset_input = 0;
     uint64_t last_feed_offset = 0;
+    
+    // AGC State
+    float current_agc_gain = 1.0f;
+    
     uint64_t tw = total_samples_written.load();
     if (tw > 0) {
         size_t q_size;
@@ -180,12 +184,15 @@ void ProfanityFilter::ASRLoop() {
     }
 
     while (running) {
-        // Poll Global Config for model path changes
+        // Poll Global Config for model path changes and Gain settings
+        bool enable_agc = true;
+        
         {
             GlobalConfig *cfg = GetGlobalConfig();
             std::lock_guard<std::mutex> lock(cfg->mutex);
             
             std::string desired_path = cfg->global_enable ? cfg->model_path : "";
+            enable_agc = cfg->enable_agc;
             
             if (target_model_path != desired_path) {
                 std::lock_guard<std::mutex> q_lock(queue_mutex);
@@ -279,8 +286,48 @@ void ProfanityFilter::ASRLoop() {
         
         total_samples_popped_16k += chunk.size();
         
+        // --- Gain Processing (AGC) ---
+        // Create a copy for model processing so output audio remains original
+        vector<float> model_chunk = chunk;
+        
+        if (enable_agc) {
+            // Automatic Gain Control
+            float peak = 0.0001f;
+            for (float s : model_chunk) {
+                float abs_s = fabsf(s);
+                if (abs_s > peak) peak = abs_s;
+            }
+            
+            // Target Peak: 0.6 (-4.4 dB)
+            float target_peak = 0.6f;
+            float desired_gain = target_peak / peak;
+            
+            // Constraints
+            if (desired_gain > 31.6f) desired_gain = 31.6f; // Max +30dB
+            if (desired_gain < 0.1f) desired_gain = 0.1f;   // Min -20dB
+            
+            // Smooth Update
+            if (desired_gain < current_agc_gain) {
+                // Attack (fast reduction)
+                current_agc_gain = current_agc_gain * 0.9f + desired_gain * 0.1f;
+            } else {
+                // Release (slow increase)
+                current_agc_gain = current_agc_gain * 0.99f + desired_gain * 0.01f;
+            }
+            
+            // Apply to model_chunk ONLY
+            for (float &s : model_chunk) {
+                s *= current_agc_gain;
+                if (s > 1.0f) s = 1.0f;
+                if (s < -1.0f) s = -1.0f;
+            }
+        } else {
+             current_agc_gain = 1.0f; // Reset if disabled
+        }
+        // ---------------------------------------
+
         if (asr_model && asr_model->recognizer && stream) {
-            SherpaOnnxOnlineStreamAcceptWaveform(stream, 16000, chunk.data(), (int32_t)chunk.size());
+            SherpaOnnxOnlineStreamAcceptWaveform(stream, 16000, model_chunk.data(), (int32_t)model_chunk.size());
             while (SherpaOnnxIsOnlineStreamReady(asr_model->recognizer, stream)) {
                 SherpaOnnxDecodeOnlineStream(asr_model->recognizer, stream);
             }

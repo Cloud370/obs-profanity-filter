@@ -44,6 +44,7 @@ struct GlobalConfig {
     int audio_effect = 0; // 0=Beep, 1=Silence, 2=Squeaky, 3=Robot
     int beep_frequency = 1000;
     int beep_mix_percent = 100;
+    bool enable_agc = true; // Automatic Gain Control (Default: ON)
     bool use_pinyin = true;
     bool comedy_mode = false;
     bool video_delay_enabled = true;
@@ -93,6 +94,7 @@ private:
     PluginModelManager *modelManager;
     
     QSpinBox *spinDelay;
+    QCheckBox *chkEnableAGC;
     QTextEdit *editDirtyWords; // User Custom Words
     QTextEdit *editSystemDirtyWords; // System Built-in Words (Read-only)
     QCheckBox *chkHideDirtyWords;

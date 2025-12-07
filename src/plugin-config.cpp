@@ -76,6 +76,7 @@ void GlobalConfig::Save() {
         obs_data_set_int(data, "audio_effect", audio_effect);
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
+        obs_data_set_bool(data, "enable_agc", enable_agc);
         obs_data_set_bool(data, "video_delay_enabled", video_delay_enabled);
         
         ParsePatterns();
@@ -246,6 +247,10 @@ void GlobalConfig::Load() {
             beep_mix_percent = obs_data_get_int(data, "beep_mix");
         }
         
+        if (obs_data_has_user_value(data, "enable_agc")) {
+            enable_agc = obs_data_get_bool(data, "enable_agc");
+        }
+
         if (obs_data_has_user_value(data, "video_delay_enabled")) {
             video_delay_enabled = obs_data_get_bool(data, "video_delay_enabled");
         }
@@ -361,6 +366,9 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     spinDelay->setSingleStep(50);
     spinDelay->setSuffix(" ms");
     
+    chkEnableAGC = new QCheckBox("启用自动增益 (Auto Gain Control)");
+    chkEnableAGC->setToolTip("开启后，将自动调整音量以保持稳定的识别效果。\n(推荐开启，可解决声音过小导致识别不到的问题)");
+
     // Audio Effect Selection
     comboEffect = new QComboBox();
     comboEffect->addItem("标准哔声 (Beep)", 0);
@@ -369,6 +377,7 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     comboEffect->addItem("电报音效 (Telegraph)", 3);
     
     layoutAudio->addRow("全局延迟时间:", spinDelay);
+    layoutAudio->addRow("", chkEnableAGC);
     layoutAudio->addRow("屏蔽音效:", comboEffect);
     
     chkEnableVideoDelay = new QCheckBox("启用音画同步缓冲 (自动应用到所有场景)");
@@ -515,6 +524,7 @@ void ConfigDialog::LoadToUI() {
     
     spinModelOffset->setValue(cfg->model_offset_ms);
     spinDelay->setValue((int)(cfg->delay_seconds * 1000));
+    chkEnableAGC->setChecked(cfg->enable_agc);
     
     // Ensure we are in visible mode before setting text to avoid overwriting "Hidden" text
     chkHideDirtyWords->setChecked(false); 
@@ -729,7 +739,8 @@ void ConfigDialog::onApply() {
         cfg->global_enable = chkGlobalEnable->isChecked();
         cfg->model_path = editModelPath->text().toStdString();
         cfg->model_offset_ms = spinModelOffset->value();
-        cfg->delay_seconds = spinDelay->value() / 1000.0;
+        cfg->delay_seconds = (double)spinDelay->value() / 1000.0;
+        cfg->enable_agc = chkEnableAGC->isChecked();
         
         if (chkHideDirtyWords->isChecked()) {
             cfg->user_dirty_words_str = m_cachedUserWords.toStdString();
