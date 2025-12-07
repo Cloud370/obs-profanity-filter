@@ -65,7 +65,7 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
         models = {
             {
                 "Sherpa-ONNX Streaming Zipformer (Bilingual Zh+En)",
-                "https://www.modelscope.cn/models/cloud370/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip",
+                "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip",
                 "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
             }
         };
