@@ -1,4 +1,5 @@
 #include "model-manager.hpp"
+#include "logging-macros.hpp"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -30,7 +31,7 @@ PluginModelManager::~PluginModelManager() {
 void PluginModelManager::LoadModels(const QString &jsonPath) {
     models.clear();
     
-    blog(LOG_INFO, "Loading models from: %s", jsonPath.toStdString().c_str());
+    BLOG(LOG_INFO, "Loading models from: %s", jsonPath.toStdString().c_str());
 
     if (!jsonPath.isEmpty()) {
         QFile file(jsonPath);
@@ -40,7 +41,7 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
             
             if (doc.isObject()) {
                 QJsonArray arr = doc.object()["models"].toArray();
-                blog(LOG_INFO, "Found %lld models in JSON", arr.count());
+                BLOG(LOG_INFO, "Found %lld models in JSON", arr.count());
                 for (const auto &val : arr) {
                     QJsonObject obj = val.toObject();
                     ModelInfo info;
@@ -50,18 +51,18 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
                     models.push_back(info);
                 }
             } else {
-                blog(LOG_WARNING, "JSON document is not an object");
+                BLOG(LOG_WARNING, "JSON document is not an object");
             }
         } else {
-            blog(LOG_WARNING, "Failed to open model file: %s", jsonPath.toStdString().c_str());
+            BLOG(LOG_WARNING, "Failed to open model file: %s", jsonPath.toStdString().c_str());
         }
     } else {
-        blog(LOG_INFO, "No model file path provided");
+        BLOG(LOG_INFO, "No model file path provided");
     }
 
     // Fallback: If no models loaded (file missing or empty), load defaults
     if (models.empty()) {
-        blog(LOG_INFO, "No models loaded, using default fallback models");
+        BLOG(LOG_INFO, "No models loaded, using default fallback models");
         models = {
             {
                 "[54M]轻量",
@@ -81,7 +82,7 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
         };
     }
     
-    blog(LOG_INFO, "Total models loaded: %zu", models.size());
+    BLOG(LOG_INFO, "Total models loaded: %zu", models.size());
 }
 
 const std::vector<ModelInfo>& PluginModelManager::GetModels() const {
@@ -114,7 +115,7 @@ bool PluginModelManager::DeleteModel(const QString &modelId) {
     
     QDir dir(path);
     if (dir.exists()) {
-        blog(LOG_INFO, "Deleting model: %s", path.toStdString().c_str());
+        BLOG(LOG_INFO, "Deleting model: %s", path.toStdString().c_str());
         return dir.removeRecursively();
     }
     return false;
@@ -253,14 +254,14 @@ void PluginModelManager::DownloadWorker(QString url, QString destPath) {
              }
              tempDir.mkpath(".");
 
-             blog(LOG_INFO, "Extracting to temporary directory: %s", tempExtractPath.toStdString().c_str());
+             BLOG(LOG_INFO, "Extracting to temporary directory: %s", tempExtractPath.toStdString().c_str());
              
              bool success = ExtractArchive(destPath, tempExtractPath, &cancelRequested);
              QFile::remove(destPath); // Remove zip file
              
              if (success) {
                  if (cancelRequested) {
-                     blog(LOG_INFO, "Download cancelled during extraction.");
+                     BLOG(LOG_INFO, "Download cancelled during extraction.");
                      tempDir.removeRecursively();
                      return;
                  }
@@ -292,7 +293,7 @@ void PluginModelManager::DownloadWorker(QString url, QString destPath) {
                      // Note: Rename fails if destination exists, so we removed it above.
                      // Also rename might fail across partitions, but here we are likely in same config dir.
                      if (QDir().rename(modelRootPath, finalModelPath)) {
-                         blog(LOG_INFO, "Model installed to: %s", finalModelPath.toStdString().c_str());
+                         BLOG(LOG_INFO, "Model installed to: %s", finalModelPath.toStdString().c_str());
                          emit downloadFinished(currentDownloadId);
                          
                          // Clean up temp dir if we moved a subdirectory out of it
@@ -302,7 +303,7 @@ void PluginModelManager::DownloadWorker(QString url, QString destPath) {
                          }
                      } else {
                          // Fallback copy if rename fails
-                         blog(LOG_WARNING, "Rename failed, trying copy...");
+                         BLOG(LOG_WARNING, "Rename failed, trying copy...");
                          // Implementing directory copy is tedious in Qt/C++ without helpers. 
                          // But usually rename works within same drive.
                          // Let's just emit error for now or try to be more robust later if needed.
@@ -310,11 +311,11 @@ void PluginModelManager::DownloadWorker(QString url, QString destPath) {
                          emit downloadError("Failed to move model to final destination.");
                      }
                  } else {
-                     blog(LOG_ERROR, "tokens.txt not found in extracted files.");
+                     BLOG(LOG_ERROR, "tokens.txt not found in extracted files.");
                      // List files for debugging
                      QDirIterator it(tempExtractPath, QDirIterator::Subdirectories);
                      while (it.hasNext()) {
-                         blog(LOG_INFO, "Found file: %s", it.next().toStdString().c_str());
+                         BLOG(LOG_INFO, "Found file: %s", it.next().toStdString().c_str());
                      }
                      tempDir.removeRecursively(); // Cleanup temp files
                      emit downloadError("Extraction completed but tokens.txt is missing (invalid model structure).");
@@ -322,7 +323,7 @@ void PluginModelManager::DownloadWorker(QString url, QString destPath) {
              } else {
                  tempDir.removeRecursively(); // Cleanup temp files
                  if (cancelRequested) {
-                     blog(LOG_INFO, "Download cancelled during extraction.");
+                     BLOG(LOG_INFO, "Download cancelled during extraction.");
                  } else {
                      emit downloadError("Failed to extract archive.");
                  }
@@ -330,7 +331,7 @@ void PluginModelManager::DownloadWorker(QString url, QString destPath) {
         } else {
             if (cancelRequested) {
                 // User cancelled
-                blog(LOG_INFO, "Download cancelled by user.");
+                BLOG(LOG_INFO, "Download cancelled by user.");
             } else {
                 QString errorMsg = QString("Download failed: %1").arg(curl_easy_strerror(res));
                 emit downloadError(errorMsg);
@@ -355,13 +356,13 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
 #endif
 
     if (!zipfile) {
-        blog(LOG_ERROR, "Cannot open zip file: %s", archivePath.toStdString().c_str());
+        BLOG(LOG_ERROR, "Cannot open zip file: %s", archivePath.toStdString().c_str());
         return false;
     }
 
     unz_global_info global_info;
     if (unzGetGlobalInfo(zipfile, &global_info) != UNZ_OK) {
-        blog(LOG_ERROR, "Could not read zip global info");
+        BLOG(LOG_ERROR, "Could not read zip global info");
         unzClose(zipfile);
         return false;
     }
@@ -377,7 +378,7 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
         unz_file_info file_info;
         char filename[1024];
         if (unzGetCurrentFileInfo(zipfile, &file_info, filename, sizeof(filename), NULL, 0, NULL, 0) != UNZ_OK) {
-            blog(LOG_ERROR, "Could not read zip file info");
+            BLOG(LOG_ERROR, "Could not read zip file info");
             unzClose(zipfile);
             return false;
         }
@@ -390,7 +391,7 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
             currentFileName = QString::fromLocal8Bit(filename);
         }
 
-        blog(LOG_INFO, "Extracting: %s", currentFileName.toStdString().c_str());
+        BLOG(LOG_INFO, "Extracting: %s", currentFileName.toStdString().c_str());
 
         QString fullPath = QDir(destDir).filePath(currentFileName);
         
@@ -408,7 +409,7 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
         } else {
             // It is a file
             if (unzOpenCurrentFile(zipfile) != UNZ_OK) {
-                blog(LOG_ERROR, "Could not open file in zip: %s", filename);
+                BLOG(LOG_ERROR, "Could not open file in zip: %s", filename);
                 unzClose(zipfile);
                 return false;
             }
@@ -422,7 +423,7 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
 
             QFile outFile(fullPath);
             if (!outFile.open(QIODevice::WriteOnly)) {
-                blog(LOG_ERROR, "Could not open destination file: %s", fullPath.toStdString().c_str());
+                BLOG(LOG_ERROR, "Could not open destination file: %s", fullPath.toStdString().c_str());
                 unzCloseCurrentFile(zipfile);
                 unzClose(zipfile);
                 return false;
@@ -432,7 +433,7 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
             do {
                 error = unzReadCurrentFile(zipfile, read_buffer, sizeof(read_buffer));
                 if (error < 0) {
-                    blog(LOG_ERROR, "Error reading zip content");
+                    BLOG(LOG_ERROR, "Error reading zip content");
                     outFile.close();
                     unzCloseCurrentFile(zipfile);
                     unzClose(zipfile);
@@ -449,7 +450,7 @@ bool PluginModelManager::ExtractArchive(const QString &archivePath, const QStrin
 
         if ((i + 1) < global_info.number_entry) {
             if (unzGoToNextFile(zipfile) != UNZ_OK) {
-                blog(LOG_ERROR, "Could not read next file in zip");
+                BLOG(LOG_ERROR, "Could not read next file in zip");
                 unzClose(zipfile);
                 return false;
             }

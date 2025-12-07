@@ -42,7 +42,6 @@ struct GlobalConfig {
     int audio_effect = 0; // 0=Beep, 1=Silence, 2=Squeaky, 3=Robot
     int beep_frequency = 1000;
     int beep_mix_percent = 100;
-    std::string debug_log_path;
     bool use_pinyin = true;
     bool comedy_mode = false;
     bool video_delay_enabled = true;
@@ -70,7 +69,6 @@ public:
     
 private slots:
     void onBrowseModel();
-    void onBrowseLog();
     void onSave();
     void onApply();
     void updateStatus();
@@ -97,7 +95,6 @@ private:
     QComboBox *comboEffect;
     QCheckBox *chkUsePinyin;
     QCheckBox *chkComedyMode;
-    QLineEdit *editLogPath;
     QCheckBox *chkEnableVideoDelay;
     QLabel *lblVideoMemory;
     QLabel *lblPathTitle; // Added for dynamic label update

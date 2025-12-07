@@ -38,15 +38,6 @@ static void update(void *data, obs_data_t *settings) {
     filter->enabled = obs_data_get_bool(settings, "enabled");
 }
 
-static bool refresh_history(obs_properties_t *props, obs_property_t *p, void *data) {
-    ProfanityFilter *filter = (ProfanityFilter *)data;
-    if (filter && filter->settings) {
-        obs_data_set_string(filter->settings, "history_view", filter->GetHistoryString().c_str());
-        return true; 
-    }
-    return false;
-}
-
 static obs_properties_t *get_properties(void *data) {
     obs_properties_t *props = obs_properties_create();
     
@@ -58,21 +49,11 @@ static obs_properties_t *get_properties(void *data) {
 
     obs_properties_add_bool(props, "enabled", "启用脏话过滤 (关闭时仅保留延迟)");
     
-    obs_properties_add_button(props, "refresh_btn", "🔄 刷新状态与日志", refresh_history);
-    obs_properties_add_text(props, "history_view", "日志输出:", OBS_TEXT_MULTILINE);
-    
-    if (data) {
-        ProfanityFilter *filter = (ProfanityFilter *)data;
-        if (filter->settings) {
-            obs_data_set_string(filter->settings, "history_view", filter->GetHistoryString().c_str());
-        }
-    }
     return props;
 }
 
 static void get_defaults(obs_data_t *settings) {
     obs_data_set_default_bool(settings, "enabled", true);
-    obs_data_set_default_string(settings, "history_view", "点击上方刷新按钮获取最新日志...");
 }
 
 static struct obs_audio_data *filter_audio(void *data, struct obs_audio_data *audio) {

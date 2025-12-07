@@ -1,6 +1,7 @@
 #include "profanity-filter.hpp"
 #include "plugin-config.hpp"
 #include "utils.hpp"
+#include "logging-macros.hpp"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -10,10 +11,7 @@
 // Dummy function to locate the module handle
 static void ModuleLocator() {}
 
-#include <fstream>
 #include <sstream>
-#include <iomanip>
-#include <ctime>
 #include <cmath>
 #include <algorithm>
 #include <regex>
@@ -21,8 +19,6 @@ static void ModuleLocator() {}
 #include <windows.h>
 
 using namespace std;
-
-#define BLOG(level, format, ...) blog(level, "[Profanity Filter] " format, ##__VA_ARGS__)
 
 std::set<ProfanityFilter*> ProfanityFilter::instances;
 std::mutex ProfanityFilter::instances_mutex;
@@ -51,101 +47,6 @@ ProfanityFilter::~ProfanityFilter() {
         stream = nullptr;
     }
     asr_model.reset();
-}
-
-void ProfanityFilter::LogToFile(const string& message) {
-    // Truncate overly long messages to protect memory
-    string safe_message = message;
-    if (safe_message.length() > 1000) {
-        safe_message = safe_message.substr(0, 1000) + "...(truncated)";
-    }
-
-    GlobalConfig *cfg = GetGlobalConfig();
-    string debug_log_path;
-    {
-        lock_guard<mutex> lock(cfg->mutex);
-        debug_log_path = cfg->debug_log_path;
-    }
-    
-    {
-        lock_guard<mutex> lock(history_mutex);
-        auto t = time(nullptr);
-        auto tm = *localtime(&t);
-        stringstream ss;
-        ss << put_time(&tm, "[%H:%M:%S] ") << safe_message;
-        
-        log_history.push_front(ss.str());
-        if (log_history.size() > 50) log_history.pop_back();
-    }
-
-    if (debug_log_path.empty()) return;
-    try {
-        ofstream outfile;
-        outfile.open(debug_log_path, ios_base::app);
-        if (outfile.is_open()) {
-            auto t = time(nullptr);
-            auto tm = *localtime(&t);
-            outfile << put_time(&tm, "[%Y-%m-%d %H:%M:%S] ") << safe_message << endl;
-        }
-    } catch (...) {}
-}
-
-string ProfanityFilter::GetHistoryString() {
-    lock_guard<mutex> lock(history_mutex);
-    stringstream ss;
-    auto t = time(nullptr);
-    auto tm = *localtime(&t);
-    
-    ss << "=== 实时状态 (更新时间: " << put_time(&tm, "%H:%M:%S") << ") ===" << endl;
-
-    GlobalConfig *cfg = GetGlobalConfig();
-    bool global_enable = true;
-    {
-        lock_guard<mutex> lock(cfg->mutex);
-        global_enable = cfg->global_enable;
-    }
-    
-    if (!global_enable) {
-         ss << "引擎状态: ⚪ 已全局禁用 (资源已释放)" << endl;
-         ss << "提示信息: 请在设置中开启全局开关以恢复功能" << endl;
-    } else if (is_loading) {
-         ss << "引擎状态: 🟡 正在加载模型..." << endl;
-         if (!loading_target_path.empty()) {
-             ss << "目标模型: " << loading_target_path << endl;
-         }
-    } else if (asr_model && asr_model->recognizer) {
-            ss << "引擎状态: 🟢 运行中 (" << loaded_model_path << ")" << endl;
-            ss << "当前音量: " << fixed << setprecision(4) << current_rms << endl;
-    } else {
-            ss << "引擎状态: 🔴 未就绪" << endl;
-            if (!initialization_error.empty()) {
-                ss << "错误信息: " << initialization_error << endl;
-            } else {
-                ss << "提示信息: 请在工具菜单中配置模型" << endl;
-            }
-    }
-    ss << "待处理队列: " << asr_queue.size() << " 样本" << endl;
-    
-    size_t beeps_count = 0;
-    {
-        lock_guard<mutex> beep_lock(beep_mutex);
-        beeps_count = pending_beeps.size();
-    }
-    ss << "待播放Beep: " << beeps_count << endl;
-    
-    size_t dropped = dropped_beeps_count.load();
-    if (dropped > 0) {
-        ss << "⚠️ 已丢弃Beep (延迟过高): " << dropped << " 次 (建议增加延迟时间)" << endl;
-    }
-
-    ss << "实时识别: " << (current_partial_text.empty() ? "(..." : current_partial_text) << endl;
-    
-    int count = 0;
-    for (const auto& line : log_history) {
-        ss << line << "\n";
-        if (++count >= 20) break;
-    }
-    return ss.str();
 }
 
 std::pair<bool, std::string> ProfanityFilter::GetGlobalModelStatus() {
@@ -197,7 +98,7 @@ void ProfanityFilter::LoadModel(const string& path) {
     
     if (asr_model) {
         // If this is the last instance, the underlying model will be destroyed here
-        LogToFile("正在释放旧模型引用..."); 
+        BLOG(LOG_INFO, "正在释放旧模型引用..."); 
     }
     asr_model.reset();
     initialization_error = "";
@@ -215,7 +116,7 @@ void ProfanityFilter::LoadModel(const string& path) {
         
         if (global_enable) {
             initialization_error = "未选择模型路径";
-            LogToFile("错误: " + initialization_error);
+            BLOG(LOG_ERROR, "错误: %s", initialization_error.c_str());
         } else {
             // Just unloaded, no error
         }
@@ -232,10 +133,10 @@ void ProfanityFilter::LoadModel(const string& path) {
             lock_guard<mutex> lock(history_mutex);
             loaded_model_path = path;
         }
-        LogToFile("引擎初始化成功");
+        BLOG(LOG_INFO, "引擎初始化成功");
     } else {
         initialization_error = err.empty() ? "引擎初始化失败" : err;
-        LogToFile("错误: " + initialization_error);
+        BLOG(LOG_ERROR, "错误: %s", initialization_error.c_str());
         
         // IMPORTANT: Even if failed, update loaded_model_path to prevent infinite retry loop in ASRLoop
         {
@@ -514,11 +415,11 @@ void ProfanityFilter::ASRLoop() {
                             if (!dict_path.empty()) {
                                 Pinyin::setDictionaryPath(dict_path);
                                 pinyin_converter = make_shared<Pinyin::Pinyin>();
-                                LogToFile("Pinyin Engine Initialized from: " + dict_path);
+                                BLOG(LOG_INFO, "Pinyin Engine Initialized from: %s", dict_path.c_str());
                             } else {
                                 static bool logged_error = false;
                                 if (!logged_error) {
-                                    LogToFile("Error: Could not find 'dict' directory for Pinyin engine.");
+                                    BLOG(LOG_ERROR, "Error: Could not find 'dict' directory for Pinyin engine.");
                                     logged_error = true;
                                 }
                             }
@@ -584,7 +485,7 @@ void ProfanityFilter::ASRLoop() {
                                 stringstream ss;
                                 ss << "DEBUG Pinyin: ";
                                 for(auto& p : text_pinyins) ss << p << " ";
-                                LogToFile(ss.str());
+                                BLOG(LOG_INFO, "%s", ss.str().c_str());
                                 debug_log_count++;
                             }
 
@@ -666,7 +567,7 @@ void ProfanityFilter::ASRLoop() {
                         if (!overlap) {
                             lock_guard<mutex> b_lock(beep_mutex);
                             pending_beeps.push_back({m.start_sample, m.end_sample, m.start_sample});
-                            LogToFile(m.log_text);
+                            BLOG(LOG_INFO, "%s", m.log_text.c_str());
                             
                             covered_intervals.push_back({m.start_sample, m.end_sample});
                         }
@@ -683,7 +584,7 @@ void ProfanityFilter::ASRLoop() {
 
             if (force_reset || SherpaOnnxOnlineStreamIsEndpoint(asr_model->recognizer, stream)) {
                 if (force_reset) {
-                    LogToFile("Info: Periodic reset of ASR stream (segment > 10min)");
+                    BLOG(LOG_INFO, "Info: Periodic reset of ASR stream (segment > 10min)");
                 }
                 SherpaOnnxOnlineStreamReset(asr_model->recognizer, stream);
                 last_reset_sample_16k = total_samples_popped_16k;
@@ -850,7 +751,7 @@ struct obs_audio_data *ProfanityFilter::ProcessAudio(struct obs_audio_data *audi
                 if (start >= end) {
                     size_t dropped = ++dropped_beeps_count;
                     if (dropped <= 5 || dropped % 10 == 0) {
-                        blog(LOG_WARNING, "[Profanity Filter] Beep dropped! Latency > Delay. Increase delay setting. (Start: %llu, End: %llu, Head: %llu)", 
+                        BLOG(LOG_WARNING, "Beep dropped! Latency > Delay. Increase delay setting. (Start: %llu, End: %llu, Head: %llu)", 
                             (unsigned long long)start, (unsigned long long)end, (unsigned long long)play_head_pos);
                     }
 

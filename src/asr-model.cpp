@@ -2,8 +2,7 @@
 #include <obs.h>
 #include <cstring>
 #include <cstdio>
-
-#define BLOG(level, format, ...) blog(level, "[Profanity Filter] " format, ##__VA_ARGS__)
+#include "logging-macros.hpp"
 
 ASRModel::ASRModel(const std::string& path, std::string& error_msg) : model_path(path) {
     SherpaOnnxOnlineRecognizerConfig config;

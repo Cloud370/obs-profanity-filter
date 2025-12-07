@@ -1,6 +1,7 @@
 #include "plugin-config.hpp"
 #include "video-delay.hpp"
 #include "profanity-filter.hpp"
+#include "logging-macros.hpp"
 #include <obs-module.h>
 #include <obs.h>
 #include <filesystem>
@@ -59,7 +60,6 @@ void GlobalConfig::Save() {
         obs_data_set_int(data, "audio_effect", audio_effect);
         obs_data_set_int(data, "beep_freq", beep_frequency);
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
-        obs_data_set_string(data, "debug_log_path", debug_log_path.c_str());
         obs_data_set_bool(data, "video_delay_enabled", video_delay_enabled);
         
         ParsePatterns();
@@ -145,9 +145,6 @@ void GlobalConfig::Load() {
         
         beep_mix_percent = 100;
         
-        s = obs_data_get_string(data, "debug_log_path");
-        debug_log_path = s ? s : "";
-        
         if (obs_data_has_user_value(data, "video_delay_enabled")) {
             video_delay_enabled = obs_data_get_bool(data, "video_delay_enabled");
         } else {
@@ -215,11 +212,11 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     
     comboModel = new QComboBox();
     const auto &loadedModels = modelManager->GetModels();
-    blog(LOG_INFO, "[ProfanityFilter] Populating combo box with %zu models", loadedModels.size());
+    BLOG(LOG_INFO, "Populating combo box with %zu models", loadedModels.size());
 
     for (const auto &m : loadedModels) {
         comboModel->addItem(m.name, m.id);
-        blog(LOG_INFO, "[ProfanityFilter] Added model to combo: %s (%s)", m.name.toStdString().c_str(), m.id.toStdString().c_str());
+        BLOG(LOG_INFO, "Added model to combo: %s (%s)", m.name.toStdString().c_str(), m.id.toStdString().c_str());
     }
     comboModel->addItem("使用自定义路径 (Custom Path)...", "custom");
     connect(comboModel, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ConfigDialog::onModelComboChanged);
@@ -299,20 +296,6 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     layoutWords->addWidget(chkComedyMode);
 
     containerLayout->addWidget(grpWords);
-    
-    // Debug Group
-    QGroupBox *grpDebug = new QGroupBox("调试选项");
-    QFormLayout *layoutDebug = new QFormLayout(grpDebug);
-    
-    QHBoxLayout *boxLog = new QHBoxLayout();
-    editLogPath = new QLineEdit();
-    QPushButton *btnBrowseLog = new QPushButton("浏览...");
-    connect(btnBrowseLog, &QPushButton::clicked, this, &ConfigDialog::onBrowseLog);
-    boxLog->addWidget(editLogPath);
-    boxLog->addWidget(btnBrowseLog);
-    
-    layoutDebug->addRow("日志文件路径:", boxLog);
-    containerLayout->addWidget(grpDebug);
     
     // Add container to main layout
     mainLayout->addWidget(settingsContainer);
@@ -400,7 +383,6 @@ void ConfigDialog::LoadToUI() {
     if (effect_idx != -1) comboEffect->setCurrentIndex(effect_idx);
     else comboEffect->setCurrentIndex(0); // Default to Beep
 
-    editLogPath->setText(QString::fromStdString(cfg->debug_log_path));
     chkEnableVideoDelay->setChecked(cfg->video_delay_enabled);
     
     // Trigger update of download button state
@@ -546,13 +528,6 @@ void ConfigDialog::onBrowseModel() {
     }
 }
 
-void ConfigDialog::onBrowseLog() {
-    QString file = QFileDialog::getSaveFileName(this, "选择日志文件", editLogPath->text());
-    if (!file.isEmpty()) {
-        editLogPath->setText(file);
-    }
-}
-
 void ConfigDialog::onApply() {
     // Validation
     if (chkGlobalEnable->isChecked()) {
@@ -594,7 +569,6 @@ void ConfigDialog::onApply() {
         cfg->audio_effect = comboEffect->currentData().toInt();
         cfg->mute_mode = (cfg->audio_effect == 1); // Backward compat
 
-        cfg->debug_log_path = editLogPath->text().toStdString();
         cfg->video_delay_enabled = chkEnableVideoDelay->isChecked();
     }
     

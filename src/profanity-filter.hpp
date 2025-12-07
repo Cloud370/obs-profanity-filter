@@ -26,7 +26,6 @@ public:
     double cached_delay = 1.5;
     
     // History
-    std::deque<std::string> log_history;
     std::string current_partial_text; 
     std::string loading_target_path;
     std::mutex history_mutex;
@@ -86,8 +85,6 @@ public:
     ProfanityFilter(obs_source_t *ctx);
     ~ProfanityFilter();
 
-    void LogToFile(const std::string& message);
-    std::string GetHistoryString();
     void LoadModel(const std::string& path);
     void Start();
     void Stop();
