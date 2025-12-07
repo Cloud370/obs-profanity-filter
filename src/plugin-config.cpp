@@ -141,20 +141,8 @@ void GlobalConfig::Load() {
         // Deprecated: Force defaults to ensure consistency now that UI is removed
         // We ignore saved values for frequency and mix to prevent users from being stuck with bad hidden settings
         beep_frequency = 1000; 
-        /*
-        beep_frequency = obs_data_get_int(data, "beep_freq");
-        if (beep_frequency < 200) beep_frequency = 1000;
-        */
-
+        
         beep_mix_percent = 100;
-        /*
-        if (obs_data_has_user_value(data, "beep_mix")) {
-            beep_mix_percent = obs_data_get_int(data, "beep_mix");
-            if (beep_mix_percent < 0 || beep_mix_percent > 100) beep_mix_percent = 100;
-        } else {
-            beep_mix_percent = 100;
-        }
-        */
         
         s = obs_data_get_string(data, "debug_log_path");
         debug_log_path = s ? s : "";
@@ -181,7 +169,23 @@ void GlobalConfig::Load() {
 
 ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     setWindowTitle("语音脏话屏蔽 - 全局配置");
-    resize(600, 500);
+    resize(600, 550);
+    
+    // Init Model Manager
+    modelManager = new PluginModelManager(this);
+    QString jsonPathStr;
+    if (g_module) {
+        char *jsonPath = obs_find_module_file(g_module, "models.json");
+        if (jsonPath) {
+            jsonPathStr = QString::fromUtf8(jsonPath);
+            bfree(jsonPath);
+        }
+    }
+    modelManager->LoadModels(jsonPathStr); // Always load, even if path is empty (triggers fallback)
+    
+    connect(modelManager, &PluginModelManager::downloadProgress, this, &ConfigDialog::onDownloadProgress);
+    connect(modelManager, &PluginModelManager::downloadFinished, this, &ConfigDialog::onDownloadFinished);
+    connect(modelManager, &PluginModelManager::downloadError, this, &ConfigDialog::onDownloadError);
     
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     
@@ -199,17 +203,47 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     containerLayout->setContentsMargins(0, 0, 0, 0);
     
     // Model Group
-    QGroupBox *grpModel = new QGroupBox("模型设置");
+    QGroupBox *grpModel = new QGroupBox("模型设置 (Model)");
     QFormLayout *layoutModel = new QFormLayout(grpModel);
+    
+    comboModel = new QComboBox();
+    const auto &loadedModels = modelManager->GetModels();
+    blog(LOG_INFO, "[ProfanityFilter] Populating combo box with %zu models", loadedModels.size());
+
+    for (const auto &m : loadedModels) {
+        comboModel->addItem(m.name, m.id);
+        blog(LOG_INFO, "[ProfanityFilter] Added model to combo: %s (%s)", m.name.toStdString().c_str(), m.id.toStdString().c_str());
+    }
+    comboModel->addItem("使用自定义路径 (Custom Path)...", "custom");
+    connect(comboModel, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ConfigDialog::onModelComboChanged);
     
     QHBoxLayout *boxPath = new QHBoxLayout();
     editModelPath = new QLineEdit();
+    editModelPath->setPlaceholderText("选择或输入模型文件夹路径...");
     QPushButton *btnBrowse = new QPushButton("浏览...");
     connect(btnBrowse, &QPushButton::clicked, this, &ConfigDialog::onBrowseModel);
     boxPath->addWidget(editModelPath);
     boxPath->addWidget(btnBrowse);
     
-    layoutModel->addRow("Sherpa-ONNX 模型路径:", boxPath);
+    QHBoxLayout *boxDownload = new QHBoxLayout();
+    btnDownloadModel = new QPushButton("⬇️ 一键下载此模型");
+    connect(btnDownloadModel, &QPushButton::clicked, this, &ConfigDialog::onDownloadModel);
+    progressDownload = new QProgressBar();
+    progressDownload->setRange(0, 100);
+    progressDownload->setValue(0);
+    progressDownload->setVisible(false);
+    lblDownloadStatus = new QLabel("");
+    
+    boxDownload->addWidget(btnDownloadModel);
+    boxDownload->addWidget(progressDownload);
+    boxDownload->addWidget(lblDownloadStatus);
+    boxDownload->addStretch();
+    
+    layoutModel->addRow("选择模型:", comboModel);
+    lblPathTitle = new QLabel("模型路径:");
+    layoutModel->addRow(lblPathTitle, boxPath);
+    layoutModel->addRow("", boxDownload);
+    
     containerLayout->addWidget(grpModel);
     
     // Audio Group
@@ -228,13 +262,8 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     comboEffect->addItem("小黄人音效 (Minion)", 2);
     comboEffect->addItem("电报音效 (Telegraph)", 3);
     
-    // Deprecated UI elements for beep frequency/mix removed as per user request
-    // spinBeepFreq & spinBeepMix are removed
-    
     layoutAudio->addRow("全局延迟时间:", spinDelay);
     layoutAudio->addRow("屏蔽音效:", comboEffect);
-    // layoutAudio->addRow("哔声频率:", spinBeepFreq);
-    // layoutAudio->addRow("哔声/静音混合比例:", spinBeepMix);
     
     chkEnableVideoDelay = new QCheckBox("启用音画同步缓冲 (自动应用到所有场景)");
     chkEnableVideoDelay->setToolTip("开启后，将自动向所有场景添加音画同步滤镜。\n关闭后，将从所有场景移除该滤镜。");
@@ -324,7 +353,36 @@ void ConfigDialog::LoadToUI() {
     
     chkGlobalEnable->setChecked(cfg->global_enable);
     settingsContainer->setVisible(cfg->global_enable);
-    editModelPath->setText(QString::fromStdString(cfg->model_path));
+    
+    // Set model path
+    QString currentPath = QString::fromStdString(cfg->model_path);
+    editModelPath->setText(currentPath);
+    
+    // Try to match current path with combo box
+    int foundIndex = -1;
+    for (int i = 0; i < comboModel->count(); i++) {
+        QString id = comboModel->itemData(i).toString();
+        if (id == "custom") continue;
+        
+        QString path = modelManager->GetModelPath(id);
+        // Normalize separators for comparison
+        QString p1 = QDir::cleanPath(path);
+        QString p2 = QDir::cleanPath(currentPath);
+        if (p1 == p2) {
+            foundIndex = i;
+            break;
+        }
+    }
+    
+    if (foundIndex != -1) {
+        comboModel->setCurrentIndex(foundIndex);
+    } else if (currentPath.isEmpty() && comboModel->count() > 1) {
+        // If path is empty and we have presets, select the first preset
+        comboModel->setCurrentIndex(0);
+    } else {
+        comboModel->setCurrentIndex(comboModel->count() - 1); // Custom
+    }
+    
     spinDelay->setValue((int)(cfg->delay_seconds * 1000));
     editDirtyWords->setText(QString::fromStdString(cfg->dirty_words_str));
     chkUsePinyin->setChecked(cfg->use_pinyin);
@@ -335,10 +393,11 @@ void ConfigDialog::LoadToUI() {
     if (effect_idx != -1) comboEffect->setCurrentIndex(effect_idx);
     else comboEffect->setCurrentIndex(0); // Default to Beep
 
-    // spinBeepFreq->setValue(cfg->beep_frequency);
-    // spinBeepMix->setValue(cfg->beep_mix_percent);
     editLogPath->setText(QString::fromStdString(cfg->debug_log_path));
     chkEnableVideoDelay->setChecked(cfg->video_delay_enabled);
+    
+    // Trigger update of download button state
+    onModelComboChanged(comboModel->currentIndex());
 }
 
 void ConfigDialog::updateStatus() {
@@ -360,10 +419,89 @@ void ConfigDialog::updateStatus() {
     lblVideoMemory->setText(text);
 }
 
+void ConfigDialog::onModelComboChanged(int index) {
+    QString id = comboModel->itemData(index).toString();
+    
+    if (id == "custom") {
+        lblPathTitle->setText("自定义路径:");
+        editModelPath->setEnabled(true);
+        editModelPath->setPlaceholderText("请选择包含 tokens.txt 的模型文件夹...");
+        btnDownloadModel->setVisible(false);
+        progressDownload->setVisible(false);
+        lblDownloadStatus->setVisible(false);
+    } else {
+        lblPathTitle->setText("安装位置:");
+        editModelPath->setEnabled(false); // Make it read-only for presets
+        
+        QString path = modelManager->GetModelPath(id);
+        editModelPath->setText(path);
+        
+        bool installed = modelManager->IsModelInstalled(id);
+        btnDownloadModel->setVisible(!installed);
+        btnDownloadModel->setEnabled(!installed);
+        progressDownload->setVisible(false);
+        lblDownloadStatus->setVisible(false);
+        
+        if (installed) {
+            lblDownloadStatus->setText("✅ 已安装 (Ready)");
+            lblDownloadStatus->setVisible(true);
+        } else {
+             lblDownloadStatus->setText("⚠️ 未安装 (需要下载)");
+             lblDownloadStatus->setVisible(true);
+        }
+    }
+}
+
+void ConfigDialog::onDownloadModel() {
+    QString id = comboModel->currentData().toString();
+    if (id == "custom") return;
+    
+    btnDownloadModel->setEnabled(false);
+    progressDownload->setValue(0);
+    progressDownload->setVisible(true);
+    lblDownloadStatus->setText("准备下载...");
+    lblDownloadStatus->setVisible(true);
+    
+    modelManager->DownloadModel(id);
+}
+
+void ConfigDialog::onDownloadProgress(qint64 received, qint64 total) {
+    if (total > 0) {
+        int percent = (int)((received * 100) / total);
+        progressDownload->setValue(percent);
+        double mbReceived = received / (1024.0 * 1024.0);
+        double mbTotal = total / (1024.0 * 1024.0);
+        lblDownloadStatus->setText(QString("正在下载: %1 MB / %2 MB").arg(mbReceived, 0, 'f', 1).arg(mbTotal, 0, 'f', 1));
+    } else {
+        progressDownload->setValue(0);
+        lblDownloadStatus->setText("正在下载...");
+    }
+}
+
+void ConfigDialog::onDownloadFinished(const QString &modelId) {
+    progressDownload->setVisible(false);
+    lblDownloadStatus->setText("✅ 下载并解压完成!");
+    
+    // Update UI state
+    onModelComboChanged(comboModel->currentIndex());
+    
+    QMessageBox::information(this, "下载完成", "模型已成功下载并安装。");
+}
+
+void ConfigDialog::onDownloadError(const QString &msg) {
+    progressDownload->setVisible(false);
+    lblDownloadStatus->setText("❌ 下载失败");
+    btnDownloadModel->setEnabled(true);
+    
+    QMessageBox::critical(this, "下载失败", "错误信息: " + msg);
+}
+
 void ConfigDialog::onBrowseModel() {
     QString dir = QFileDialog::getExistingDirectory(this, "选择模型文件夹", editModelPath->text());
     if (!dir.isEmpty()) {
         editModelPath->setText(dir);
+        // Switch to custom if not matching any preset
+        comboModel->setCurrentIndex(comboModel->count() - 1);
     }
 }
 
@@ -375,6 +513,29 @@ void ConfigDialog::onBrowseLog() {
 }
 
 void ConfigDialog::onApply() {
+    // Validation
+    if (chkGlobalEnable->isChecked()) {
+        QString path = editModelPath->text();
+        if (path.isEmpty()) {
+             QMessageBox::warning(this, "未配置模型", "启用插件需要选择一个模型路径。");
+             // We allow saving empty path (it will error in log but not crash), 
+             // but warning is good. User can ignore.
+        } else {
+             QDir dir(path);
+             if (!dir.exists("tokens.txt")) {
+                 QMessageBox::StandardButton reply;
+                 reply = QMessageBox::warning(this, "模型路径无效", 
+                     "选定的模型路径似乎无效 (未找到 tokens.txt)。\n"
+                     "这会导致插件无法工作。\n\n"
+                     "请确保选择了包含 tokens.txt 的文件夹。\n"
+                     "如果是自动下载的模型，可能解压失败或路径层级不正确。\n\n"
+                     "是否仍然保存设置?",
+                     QMessageBox::Yes | QMessageBox::No);
+                 if (reply == QMessageBox::No) return;
+             }
+        }
+    }
+
     GlobalConfig *cfg = GetGlobalConfig();
     
     bool old_enabled_state;
@@ -392,8 +553,6 @@ void ConfigDialog::onApply() {
         cfg->audio_effect = comboEffect->currentData().toInt();
         cfg->mute_mode = (cfg->audio_effect == 1); // Backward compat
 
-        // cfg->beep_frequency = spinBeepFreq->value();
-        // cfg->beep_mix_percent = spinBeepMix->value();
         cfg->debug_log_path = editLogPath->text().toStdString();
         cfg->video_delay_enabled = chkEnableVideoDelay->isChecked();
     }
@@ -421,8 +580,6 @@ void FreeGlobalConfig() {
         g_config = nullptr;
     }
 }
-
-void SetGlobalConfigModule(obs_module_t *module);
 
 void OpenGlobalConfigDialog() {
     if (!g_dialog) {

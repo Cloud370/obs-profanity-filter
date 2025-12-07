@@ -66,8 +66,14 @@
 
 本插件需要 Sherpa-ONNX 格式的语音识别模型。
 
+**方式一：自动下载 (推荐)**
+插件内置了模型管理功能，您可以直接在插件设置界面中一键下载并安装推荐模型，无需手动操作。详情请见下方“使用教程”。
+
+**方式二：手动下载**
+如果您无法在线下载，可以手动配置：
+
 1.  下载预训练模型（推荐使用 `sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20`）：  
-    [ModelScope 下载地址](https://modelscope.cn/models/cloud370/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/file/view/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip)
+    [ModelScope 下载地址](https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip)
 2.  解压模型文件到一个固定目录（例如 `D:\OBS-Models\`）。
 3.  确保目录内包含 `tokens.txt`, `encoder.onnx`, `decoder.onnx`, `joiner.onnx` 等核心文件。
 
@@ -80,7 +86,9 @@
 1.  启动 OBS Studio。
 2.  点击顶部菜单栏的 **“工具 (Tools)”** -> **“语音脏话屏蔽配置 (Profanity Filter Settings)”**。
 3.  在弹出的设置窗口中：
-    - **模型路径**: 选择您刚才解压的模型文件夹路径。
+    - **模型选择**: 在下拉框中选择一个预设模型。
+    - **下载模型**: 如果显示“未安装”，请点击 **“⬇️ 一键下载此模型”** 按钮，等待下载完成后即可自动配置。
+    - **模型路径**: 如果您选择“使用自定义路径”，则需要手动指定本地模型文件夹。
     - **全局延迟时间**: 设置音频延迟时间（建议 500 毫秒，**最低不能低于 300 毫秒**，否则根据原理 Beep 声无法跟上语速）。
     - **屏蔽词列表**: 输入需要屏蔽的词汇（英文逗号分隔）。
     - **音频处理**: 选择是静音还是播放哔声。

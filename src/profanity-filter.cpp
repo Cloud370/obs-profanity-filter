@@ -170,6 +170,9 @@ void ProfanityFilter::LoadModel(const string& path) {
     } else {
         initialization_error = err.empty() ? "引擎初始化失败" : err;
         LogToFile("错误: " + initialization_error);
+        
+        // IMPORTANT: Even if failed, update loaded_model_path to prevent infinite retry loop in ASRLoop
+        loaded_model_path = path; 
     }
 }
 

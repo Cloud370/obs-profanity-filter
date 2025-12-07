@@ -19,6 +19,9 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTimer>
+#include <QProgressBar>
+
+#include "model-manager.hpp"
 
 #include <string>
 #include <vector>
@@ -71,10 +74,22 @@ private slots:
     void onSave();
     void onApply();
     void updateStatus();
+    void onModelComboChanged(int index);
+    void onDownloadModel();
+    void onDownloadProgress(qint64 received, qint64 total);
+    void onDownloadFinished(const QString &modelId);
+    void onDownloadError(const QString &msg);
     
 private:
     QCheckBox *chkGlobalEnable;
-    QLineEdit *editModelPath;
+    QComboBox *comboModel; // Replaces editModelPath for main selection
+    QLineEdit *editModelPath; // Hidden or advanced
+    QPushButton *btnDownloadModel;
+    QProgressBar *progressDownload;
+    QLabel *lblDownloadStatus;
+    
+    PluginModelManager *modelManager;
+    
     QSpinBox *spinDelay;
     QTextEdit *editDirtyWords; // Use TextEdit for multiline
     QCheckBox *chkMuteMode; // Deprecated UI, replaced by comboEffect
@@ -84,6 +99,7 @@ private:
     QLineEdit *editLogPath;
     QCheckBox *chkEnableVideoDelay;
     QLabel *lblVideoMemory;
+    QLabel *lblPathTitle; // Added for dynamic label update
     QTimer *statusTimer;
     
     // Container for all settings below global switch
