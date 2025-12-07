@@ -292,12 +292,14 @@ void ProfanityFilter::ASRLoop() {
                 vector<regex> patterns;
                 bool use_pinyin;
                 bool comedy_mode;
+                int model_offset_ms;
                 string current_dirty_words;
                 {
                     lock_guard<mutex> lock(cfg->mutex);
                     patterns = cfg->dirty_patterns; // Copy
                     use_pinyin = cfg->use_pinyin;
                     comedy_mode = cfg->comedy_mode;
+                    model_offset_ms = cfg->model_offset_ms;
                     current_dirty_words = cfg->dirty_words_str;
                 }
                 
@@ -358,6 +360,17 @@ void ProfanityFilter::ASRLoop() {
                                 
                                 uint64_t start_abs = (uint64_t)(start_16k * current_ratio) + start_offset_input;
                                 uint64_t end_abs = (uint64_t)(end_16k * current_ratio) + start_offset_input;
+                                
+                                // Apply Model Latency Offset
+                                int64_t offset_samples = (int64_t)((model_offset_ms / 1000.0) * current_sr);
+                                if (offset_samples >= 0) {
+                                    start_abs += offset_samples;
+                                    end_abs += offset_samples;
+                                } else {
+                                    uint64_t sub = (uint64_t)(-offset_samples);
+                                    start_abs = (start_abs > sub) ? start_abs - sub : 0;
+                                    end_abs = (end_abs > sub) ? end_abs - sub : 0;
+                                }
                                 
                                 // Safe margin: 150ms = 0.15 * sr (Reduced from 400ms to avoid false positives)
                                 uint32_t margin = (uint32_t)(0.15 * current_sr);
@@ -517,6 +530,17 @@ void ProfanityFilter::ASRLoop() {
                                         
                                         uint64_t start_abs = (uint64_t)(start_16k * current_ratio) + start_offset_input;
                                         uint64_t end_abs = (uint64_t)(end_16k * current_ratio) + start_offset_input;
+
+                                        // Apply Model Latency Offset
+                                        int64_t offset_samples = (int64_t)((model_offset_ms / 1000.0) * current_sr);
+                                        if (offset_samples >= 0) {
+                                            start_abs += offset_samples;
+                                            end_abs += offset_samples;
+                                        } else {
+                                            uint64_t sub = (uint64_t)(-offset_samples);
+                                            start_abs = (start_abs > sub) ? start_abs - sub : 0;
+                                            end_abs = (end_abs > sub) ? end_abs - sub : 0;
+                                        }
                                         
                                         // Safe margin: 150ms = 0.15 * sr
                                         uint32_t margin = (uint32_t)(0.15 * current_sr);

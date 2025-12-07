@@ -68,6 +68,7 @@ void GlobalConfig::Save() {
         
         obs_data_set_bool(data, "global_enable", global_enable);
         obs_data_set_string(data, "model_path", model_path.c_str());
+        obs_data_set_int(data, "model_offset_ms", model_offset_ms);
         obs_data_set_double(data, "delay_seconds", delay_seconds);
         // dirty_words stored in external files now
         obs_data_set_bool(data, "use_pinyin", use_pinyin);
@@ -220,6 +221,10 @@ void GlobalConfig::Load() {
         const char* s = obs_data_get_string(data, "model_path");
         model_path = s ? s : "";
         
+        if (obs_data_has_user_value(data, "model_offset_ms")) {
+            model_offset_ms = obs_data_get_int(data, "model_offset_ms");
+        }
+
         delay_seconds = obs_data_get_double(data, "delay_seconds");
         if (delay_seconds < 0.01) delay_seconds = 0.5;
         
@@ -335,6 +340,14 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     layoutModel->addRow("选择模型:", comboModel);
     lblPathTitle = new QLabel("模型路径:");
     layoutModel->addRow(lblPathTitle, boxPath);
+
+    spinModelOffset = new QSpinBox();
+    spinModelOffset->setRange(-2000, 2000);
+    spinModelOffset->setSingleStep(50);
+    spinModelOffset->setSuffix(" ms");
+    spinModelOffset->setToolTip("模型延迟补偿 (Offset)\n不同模型可能有不同的处理延迟，导致哔声位置偏移。\n调整此值可校准哔声位置。\n正值: 哔声延后\n负值: 哔声提前");
+    layoutModel->addRow("延迟补偿:", spinModelOffset);
+    
     layoutModel->addRow("", boxDownload);
     
     containerLayout->addWidget(grpModel);
@@ -500,6 +513,7 @@ void ConfigDialog::LoadToUI() {
         comboModel->setCurrentIndex(comboModel->count() - 1); // Custom
     }
     
+    spinModelOffset->setValue(cfg->model_offset_ms);
     spinDelay->setValue((int)(cfg->delay_seconds * 1000));
     
     // Ensure we are in visible mode before setting text to avoid overwriting "Hidden" text
@@ -557,6 +571,27 @@ void ConfigDialog::updateStatus() {
 
 void ConfigDialog::onModelComboChanged(int index) {
     QString id = comboModel->itemData(index).toString();
+    
+    // Auto-set offset and delay from model default if available
+    if (id != "custom") {
+        const auto &models = modelManager->GetModels();
+        for (const auto &m : models) {
+            if (m.id == id) {
+                // Only update if we are not in the middle of LoadToUI (checked via visible?)
+                // Actually, LoadToUI sets the saved value AFTER this, so it's safe to always set here.
+                spinModelOffset->setValue(m.offset);
+                
+                // Also suggest/set recommended delay if current delay is less than recommended
+                int recommended = m.delay;
+                if (spinDelay->value() < recommended) {
+                    spinDelay->setValue(recommended);
+                    // Optional: Maybe show a tooltip or flash?
+                    // For now just auto-updating is safest for user experience.
+                }
+                break;
+            }
+        }
+    }
     
     if (id == "custom") {
         lblPathTitle->setText("自定义路径:");
@@ -693,6 +728,7 @@ void ConfigDialog::onApply() {
         
         cfg->global_enable = chkGlobalEnable->isChecked();
         cfg->model_path = editModelPath->text().toStdString();
+        cfg->model_offset_ms = spinModelOffset->value();
         cfg->delay_seconds = spinDelay->value() / 1000.0;
         
         if (chkHideDirtyWords->isChecked()) {

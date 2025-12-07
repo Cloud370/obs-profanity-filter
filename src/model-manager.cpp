@@ -48,6 +48,12 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
                     info.name = obj["name"].toString();
                     info.url = obj["url"].toString();
                     info.id = obj["id"].toString();
+                    if (obj.contains("offset")) {
+                        info.offset = obj["offset"].toInt();
+                    }
+                    if (obj.contains("delay")) {
+                        info.delay = obj["delay"].toInt();
+                    }
                     models.push_back(info);
                 }
             } else {
@@ -67,17 +73,23 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
             {
                 "[54M]轻量",
                 "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23.zip",
-                "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
+                "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23",
+                0,
+                1000
             },
             {
                 "[357MB]标准",
                 "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.zip",
-                "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+                "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+                0,
+                500
             },
             {
                 "[597MB]最强",
                 "https://modelscope.cn/models/cloud370/obs-profanity-filter/resolve/master/sherpa-onnx-streaming-zipformer-zh-2025-06-30.zip",
-                "sherpa-onnx-streaming-zipformer-zh-2025-06-30"
+                "sherpa-onnx-streaming-zipformer-zh-2025-06-30",
+                0,
+                1000
             }
         };
     }

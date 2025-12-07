@@ -14,6 +14,8 @@ struct ModelInfo {
     QString name;
     QString url;
     QString id; // Folder name
+    int offset = 0; // Default offset in ms
+    int delay = 500; // Recommended delay in ms
 };
 
 class PluginModelManager : public QObject {

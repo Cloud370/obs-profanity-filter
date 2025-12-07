@@ -36,6 +36,7 @@ struct GlobalConfig {
     // Settings
     bool global_enable = true;
     std::string model_path;
+    int model_offset_ms = 0; // Model latency compensation
     double delay_seconds = 0.5;
     std::string dirty_words_str; // Combined (for internal use)
     std::string system_dirty_words_str; // Read-only built-in
@@ -82,6 +83,7 @@ private slots:
 private:
     QCheckBox *chkGlobalEnable;
     QComboBox *comboModel; // Replaces editModelPath for main selection
+    QSpinBox *spinModelOffset; // Added for model latency calibration
     QLineEdit *editModelPath; // Hidden or advanced
     QPushButton *btnDownloadModel;
     QProgressBar *progressDownload;
