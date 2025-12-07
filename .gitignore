@@ -17,6 +17,7 @@
 !README.md
 !Make-Installer.ps1
 !CHANGELOG.md
+!docs
 
 # Whitelist directories
 !/installer

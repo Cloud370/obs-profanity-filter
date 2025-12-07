@@ -2,6 +2,10 @@
 
 **obs-profanity-filter** 是一个为 OBS Studio 开发的高级音频插件，旨在直播过程中实时检测并屏蔽脏话。
 
+## 功能预览
+
+[![功能预览](docs/img/global-settings.png)](docs/img/global-settings.png)
+
 ## 核心功能
 
 - **预读屏蔽**: 延迟输出，播出前替换为静音、哔声或多种特效（小黄人、电报等）。
@@ -19,17 +23,32 @@
 - 延迟：设置 ≥300ms（推荐 500ms），可开启“音画同步缓冲”
 - 词库与音效：按需配置，最后点击“保存并应用”
 
+<details>
+<summary>展开全局配置截图</summary>
+<img src="docs/img/global-settings.png" alt="全局配置界面示意图" width="720" />
+</details>
+
 ### 第二步：添加滤镜
 
  - 为所有音频轨道添加：右键音源 → **滤镜** → **+** → **语音脏话屏蔽**。
  - 必须为所有音频轨道添加后，再按音源决定是否开启过滤；例如仅开启麦克风过滤，其他轨道关闭过滤但保留延迟以保持同步。
  - 自测：在混音器的 **高级音频设置** 中设为 **仅监听** 或 **监听并输出**。
 
+<details>
+<summary>展开音频滤镜截图</summary>
+<img src="docs/img/audio-filter.png" alt="音频滤镜添加示意图" width="720" />
+</details>
+
 ### 第三步：音画同步（自动） 🎬
 
 - 启用“音画同步缓冲”后自动为所有场景添加同步滤镜并按延迟同步视频，无需手动“渲染延迟”。
 - 需要手动控制时可关闭该开关后自行添加“渲染延迟”。
 - ⚠️ 延迟越大显存占用越高；未激活场景会自动释放显存。
+
+<details>
+<summary>展开场景滤镜截图</summary>
+<img src="docs/img/scene-filter.png" alt="场景滤镜与渲染延迟示意图" width="720" />
+</details>
 
 ---
 
