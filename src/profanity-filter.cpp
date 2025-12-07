@@ -24,7 +24,14 @@ using namespace std;
 
 #define BLOG(level, format, ...) blog(level, "[Profanity Filter] " format, ##__VA_ARGS__)
 
+std::set<ProfanityFilter*> ProfanityFilter::instances;
+std::mutex ProfanityFilter::instances_mutex;
+
 ProfanityFilter::ProfanityFilter(obs_source_t *ctx) : context(ctx) {
+    {
+        lock_guard<mutex> lock(instances_mutex);
+        instances.insert(this);
+    }
     // Initial sync with global config
     GlobalConfig *cfg = GetGlobalConfig();
     lock_guard<mutex> lock(cfg->mutex);
@@ -33,6 +40,10 @@ ProfanityFilter::ProfanityFilter(obs_source_t *ctx) : context(ctx) {
 }
 
 ProfanityFilter::~ProfanityFilter() {
+    {
+        lock_guard<mutex> lock(instances_mutex);
+        instances.erase(this);
+    }
     Stop();
     if (settings) obs_data_release(settings);
     if (stream) {
@@ -97,6 +108,11 @@ string ProfanityFilter::GetHistoryString() {
     if (!global_enable) {
          ss << "引擎状态: ⚪ 已全局禁用 (资源已释放)" << endl;
          ss << "提示信息: 请在设置中开启全局开关以恢复功能" << endl;
+    } else if (is_loading) {
+         ss << "引擎状态: 🟡 正在加载模型..." << endl;
+         if (!loading_target_path.empty()) {
+             ss << "目标模型: " << loading_target_path << endl;
+         }
     } else if (asr_model && asr_model->recognizer) {
             ss << "引擎状态: 🟢 运行中 (" << loaded_model_path << ")" << endl;
             ss << "当前音量: " << fixed << setprecision(4) << current_rms << endl;
@@ -132,10 +148,56 @@ string ProfanityFilter::GetHistoryString() {
     return ss.str();
 }
 
+std::pair<bool, std::string> ProfanityFilter::GetGlobalModelStatus() {
+    std::lock_guard<std::mutex> lock(instances_mutex);
+    
+    // Check loading first
+    for (auto* filter : instances) {
+        if (filter->is_loading) {
+             std::string path;
+             {
+                 std::lock_guard<std::mutex> h_lock(filter->history_mutex);
+                 path = filter->loading_target_path;
+             }
+             // Truncate if too long for UI
+             if (path.length() > 40) path = "..." + path.substr(path.length() - 37);
+             return {true, "🟡 正在加载 " + path};
+        }
+    }
+    
+    // Check loaded or error
+    for (auto* filter : instances) {
+        if (filter->asr_model && filter->asr_model->recognizer) {
+             return {false, "🟢 模型运行中"};
+        }
+        
+        // Check error (initialization_error is not strictly mutex protected but only written during load)
+        // Since is_loading is false here, it should be safe enough, but to be 100% safe we could use history_mutex for it too if we moved it there.
+        // For now, let's assume it's stable when not loading.
+        if (!filter->initialization_error.empty()) {
+             return {false, "🔴 错误: " + filter->initialization_error};
+        }
+    }
+    
+    if (instances.empty()) return {false, "⚪ 无活跃来源 (请添加滤镜)"};
+    
+    return {false, "⚪ 未初始化"};
+}
+
 void ProfanityFilter::LoadModel(const string& path) {
+    {
+        lock_guard<mutex> lock(history_mutex);
+        loading_target_path = path;
+    }
+    is_loading = true;
     if (stream) {
         SherpaOnnxDestroyOnlineStream(stream);
         stream = nullptr;
+    }
+    
+    if (asr_model) {
+        // If this is the last instance, the underlying model will be destroyed here
+        LogToFile("正在释放旧模型引用..."); 
     }
     asr_model.reset();
     initialization_error = "";
@@ -157,6 +219,7 @@ void ProfanityFilter::LoadModel(const string& path) {
         } else {
             // Just unloaded, no error
         }
+        is_loading = false;
         return;
     }
     
@@ -165,15 +228,22 @@ void ProfanityFilter::LoadModel(const string& path) {
     
     if (asr_model && asr_model->recognizer) {
         stream = SherpaOnnxCreateOnlineStream(asr_model->recognizer);
-        loaded_model_path = path;
+        {
+            lock_guard<mutex> lock(history_mutex);
+            loaded_model_path = path;
+        }
         LogToFile("引擎初始化成功");
     } else {
         initialization_error = err.empty() ? "引擎初始化失败" : err;
         LogToFile("错误: " + initialization_error);
         
         // IMPORTANT: Even if failed, update loaded_model_path to prevent infinite retry loop in ASRLoop
-        loaded_model_path = path; 
+        {
+            lock_guard<mutex> lock(history_mutex);
+            loaded_model_path = path;
+        }
     }
+    is_loading = false;
 }
 
 void ProfanityFilter::Start() {
@@ -209,6 +279,19 @@ void ProfanityFilter::ASRLoop() {
     }
 
     while (running) {
+        // Poll Global Config for model path changes
+        {
+            GlobalConfig *cfg = GetGlobalConfig();
+            std::lock_guard<std::mutex> lock(cfg->mutex);
+            
+            std::string desired_path = cfg->global_enable ? cfg->model_path : "";
+            
+            if (target_model_path != desired_path) {
+                std::lock_guard<std::mutex> q_lock(queue_mutex);
+                target_model_path = desired_path;
+            }
+        }
+
         // 1. Check for Model Change
         {
             string target;

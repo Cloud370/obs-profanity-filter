@@ -1,5 +1,6 @@
 #include "plugin-config.hpp"
 #include "video-delay.hpp"
+#include "profanity-filter.hpp"
 #include <obs-module.h>
 #include <obs.h>
 #include <filesystem>
@@ -206,6 +207,12 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     QGroupBox *grpModel = new QGroupBox("模型设置 (Model)");
     QFormLayout *layoutModel = new QFormLayout(grpModel);
     
+    lblModelStatus = new QLabel("状态: 检查中...");
+    QFont statusFont = lblModelStatus->font();
+    statusFont.setBold(true);
+    lblModelStatus->setFont(statusFont);
+    layoutModel->addRow("当前状态:", lblModelStatus);
+    
     comboModel = new QComboBox();
     const auto &loadedModels = modelManager->GetModels();
     blog(LOG_INFO, "[ProfanityFilter] Populating combo box with %zu models", loadedModels.size());
@@ -401,6 +408,21 @@ void ConfigDialog::LoadToUI() {
 }
 
 void ConfigDialog::updateStatus() {
+    // Model Status Update
+    auto status = ProfanityFilter::GetGlobalModelStatus();
+    lblModelStatus->setText(QString::fromStdString(status.second));
+    
+    if (status.first) {
+        // Loading
+        lblModelStatus->setStyleSheet("color: #E6A23C; font-weight: bold;"); // Warning Orange
+    } else if (status.second.find("运行中") != std::string::npos) {
+        lblModelStatus->setStyleSheet("color: #67C23A; font-weight: bold;"); // Success Green
+    } else if (status.second.find("错误") != std::string::npos) {
+        lblModelStatus->setStyleSheet("color: #F56C6C; font-weight: bold;"); // Danger Red
+    } else {
+        lblModelStatus->setStyleSheet("color: #909399; font-style: italic;"); // Info Gray
+    }
+
     double mb = VideoDelayFilter::total_memory_mb.load();
     QString text = QString("当前音画同步显存占用: %1 MB").arg(mb, 0, 'f', 1);
     

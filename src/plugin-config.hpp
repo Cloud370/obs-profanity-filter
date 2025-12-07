@@ -87,6 +87,7 @@ private:
     QPushButton *btnDownloadModel;
     QProgressBar *progressDownload;
     QLabel *lblDownloadStatus;
+    QLabel *lblModelStatus;
     
     PluginModelManager *modelManager;
     

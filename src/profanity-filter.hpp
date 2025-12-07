@@ -28,6 +28,7 @@ public:
     // History
     std::deque<std::string> log_history;
     std::string current_partial_text; 
+    std::string loading_target_path;
     std::mutex history_mutex;
 
     // State
@@ -67,6 +68,7 @@ public:
     std::vector<BeepRange> pending_beeps;
     
     std::string initialization_error = "";
+    std::atomic<bool> is_loading{false};
     float current_rms = 0.0f;
     
     obs_data_t *settings = nullptr;
@@ -92,4 +94,9 @@ public:
     void ASRLoop();
     
     struct obs_audio_data *ProcessAudio(struct obs_audio_data *audio);
+
+    // Static Global Status Access
+    static std::set<ProfanityFilter*> instances;
+    static std::mutex instances_mutex;
+    static std::pair<bool, std::string> GetGlobalModelStatus();
 };
