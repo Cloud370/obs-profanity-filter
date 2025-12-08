@@ -142,14 +142,16 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE sherpa-onnx-c-api cpp-pinyin
 
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_20)
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE 
-    src/plugin-main.cpp 
-    src/plugin-config.cpp 
-    src/model-manager.cpp 
-    src/asr-model.cpp 
-    src/utils.cpp 
-    src/profanity-filter.cpp 
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    src/plugin-main.cpp
+    src/plugin-config.cpp
+    src/model-manager.cpp
+    src/asr-model.cpp
+    src/utils.cpp
+    src/profanity-filter.cpp
     src/video-delay.cpp
+    src/file-downloader.cpp
+    src/runtime-manager.cpp
     ${MINIZIP_SOURCES}
 )
 
@@ -175,6 +177,9 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
     "${CMAKE_CURRENT_SOURCE_DIR}/data/builtin_dirty_words.txt"
     "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/data/builtin_dirty_words.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/runtime.json"
+    "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/data/runtime.json"
 )
 
 # Install dependencies
@@ -193,6 +198,7 @@ install(
 install(
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/data/models.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/data/builtin_dirty_words.txt"
+          "${CMAKE_CURRENT_SOURCE_DIR}/data/runtime.json"
     DESTINATION "${CMAKE_PROJECT_NAME}/data"
 )
 

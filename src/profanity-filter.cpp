@@ -95,17 +95,18 @@ void ProfanityFilter::LoadModel(const string& path) {
         SherpaOnnxDestroyOnlineStream(stream);
         stream = nullptr;
     }
-    
+
     if (asr_model) {
         // If this is the last instance, the underlying model will be destroyed here
-        BLOG(LOG_INFO, "正在释放旧模型引用..."); 
+        BLOG(LOG_INFO, "正在释放旧模型引用...");
     }
     asr_model.reset();
     initialization_error = "";
-    
+
     if (path.empty()) {
         loaded_model_path = "";
-        
+        loaded_provider = "";
+
         // Check if it's due to global disable
         GlobalConfig *cfg = GetGlobalConfig();
         bool global_enable = true;
@@ -113,7 +114,7 @@ void ProfanityFilter::LoadModel(const string& path) {
             lock_guard<mutex> lock(cfg->mutex);
             global_enable = cfg->global_enable;
         }
-        
+
         if (global_enable) {
             initialization_error = "未选择模型路径";
             BLOG(LOG_ERROR, "错误: %s", initialization_error.c_str());
@@ -123,25 +124,39 @@ void ProfanityFilter::LoadModel(const string& path) {
         is_loading = false;
         return;
     }
-    
+
+    // 获取当前 provider 设置
+    string provider = "cpu";
+    {
+        GlobalConfig *cfg = GetGlobalConfig();
+        if (cfg) {
+            lock_guard<mutex> lock(cfg->mutex);
+            if (cfg->enable_gpu) {
+                provider = cfg->onnx_provider;
+            }
+        }
+    }
+
     string err;
-    asr_model = ModelManager::Get(path, err);
-    
+    asr_model = ModelManager::Get(path, provider, err);
+
     if (asr_model && asr_model->recognizer) {
         stream = SherpaOnnxCreateOnlineStream(asr_model->recognizer);
         {
             lock_guard<mutex> lock(history_mutex);
             loaded_model_path = path;
+            loaded_provider = provider;
         }
-        BLOG(LOG_INFO, "引擎初始化成功");
+        BLOG(LOG_INFO, "引擎初始化成功 (provider: %s)", provider.c_str());
     } else {
         initialization_error = err.empty() ? "引擎初始化失败" : err;
         BLOG(LOG_ERROR, "错误: %s", initialization_error.c_str());
-        
+
         // IMPORTANT: Even if failed, update loaded_model_path to prevent infinite retry loop in ASRLoop
         {
             lock_guard<mutex> lock(history_mutex);
             loaded_model_path = path;
+            loaded_provider = provider;
         }
     }
     is_loading = false;
@@ -186,29 +201,38 @@ void ProfanityFilter::ASRLoop() {
     while (running) {
         // Poll Global Config for model path changes and Gain settings
         bool enable_agc = true;
-        
+        string target_provider = "cpu";
+
         {
             GlobalConfig *cfg = GetGlobalConfig();
             std::lock_guard<std::mutex> lock(cfg->mutex);
-            
+
             std::string desired_path = cfg->global_enable ? cfg->model_path : "";
             enable_agc = cfg->enable_agc;
-            
+
+            // 获取 provider 设置
+            if (cfg->enable_gpu) {
+                target_provider = cfg->onnx_provider;
+            }
+
             if (target_model_path != desired_path) {
                 std::lock_guard<std::mutex> q_lock(queue_mutex);
                 target_model_path = desired_path;
             }
         }
 
-        // 1. Check for Model Change
+        // 1. Check for Model Change or Provider Change
         {
             string target;
             {
                 lock_guard<mutex> lock(queue_mutex);
                 target = target_model_path;
             }
-            
-            if (target != loaded_model_path) {
+
+            // 检测路径变化或 provider 变化
+            bool needs_reload = (target != loaded_model_path) || (target_provider != loaded_provider);
+
+            if (needs_reload) {
                 LoadModel(target);
                 // Reset stream implies resetting timestamp reference
                 last_reset_sample_16k = total_samples_popped_16k;
@@ -218,7 +242,7 @@ void ProfanityFilter::ASRLoop() {
                     lock_guard<mutex> lock(queue_mutex);
                     asr_queue.clear();
                 }
-                
+
                 // Re-sync time after clearing queue
                 uint64_t tw_now = total_samples_written.load();
                 double ratio_now = sample_rate_ratio.load();
@@ -227,7 +251,7 @@ void ProfanityFilter::ASRLoop() {
                     start_offset_input = (uint64_t)diff;
                 }
                 last_feed_offset = start_offset_input;
-                
+
                 processed_matches.clear();
             }
         }

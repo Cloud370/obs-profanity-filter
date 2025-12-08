@@ -22,6 +22,7 @@
 #include <QProgressBar>
 
 #include "model-manager.hpp"
+#include "runtime-manager.hpp"
 
 #include <string>
 #include <vector>
@@ -32,7 +33,7 @@
 struct GlobalConfig {
     bool loaded = false;
     bool is_first_run = false;
-    
+
     // Settings
     bool global_enable = true;
     std::string model_path;
@@ -48,10 +49,15 @@ struct GlobalConfig {
     bool use_pinyin = true;
     bool comedy_mode = false;
     bool video_delay_enabled = true;
-    
+
+    // GPU Acceleration Settings
+    bool enable_gpu = false;           // GPU 加速总开关
+    std::string onnx_provider = "cpu"; // "cpu" | "cuda"
+    int cuda_device_id = 0;            // CUDA 设备 ID
+
     // Parsed State
     std::vector<std::regex> dirty_patterns;
-    
+
     mutable std::mutex mutex;
 
     void Save();
@@ -69,18 +75,26 @@ public:
     ConfigDialog(QWidget *parent = nullptr);
     ~ConfigDialog();
     void LoadToUI();
-    
+
 private slots:
     void onBrowseModel();
     void onSave();
     void onApply();
     void updateStatus();
+    void updateGpuStatus();
     void onModelComboChanged(int index);
     void onModelAction();
     void onDownloadProgress(qint64 received, qint64 total);
     void onDownloadFinished(const QString &modelId);
     void onDownloadError(const QString &msg);
-    
+
+    // GPU Runtime slots
+    void onGpuEnableChanged(bool enabled);
+    void onRuntimeAction();
+    void onRuntimeDownloadProgress(qint64 received, qint64 total);
+    void onRuntimeDownloadFinished(const QString &runtimeId);
+    void onRuntimeDownloadError(const QString &msg);
+
 private:
     QCheckBox *chkGlobalEnable;
     QComboBox *comboModel; // Replaces editModelPath for main selection
@@ -90,9 +104,9 @@ private:
     QProgressBar *progressDownload;
     QLabel *lblDownloadStatus;
     QLabel *lblModelStatus;
-    
+
     PluginModelManager *modelManager;
-    
+
     QSpinBox *spinDelay;
     QCheckBox *chkEnableAGC;
     QTextEdit *editDirtyWords; // User Custom Words
@@ -100,7 +114,7 @@ private:
     QCheckBox *chkHideDirtyWords;
     QString m_cachedUserWords;
     QString m_cachedSystemWords;
-    
+
     QCheckBox *chkMuteMode; // Deprecated UI, replaced by comboEffect
     QComboBox *comboEffect;
     QCheckBox *chkUsePinyin;
@@ -109,9 +123,20 @@ private:
     QLabel *lblVideoMemory;
     QLabel *lblPathTitle; // Added for dynamic label update
     QTimer *statusTimer;
-    
+
     // Container for all settings below global switch
     QWidget *settingsContainer;
+
+    // GPU Acceleration UI
+    RuntimeManager *runtimeManager;
+    QCheckBox *chkEnableGpu;
+    QComboBox *comboProvider;
+    QComboBox *comboGpuDevice;
+    QLabel *lblGpuStatus;
+    QPushButton *btnRuntimeAction;
+    QProgressBar *progressRuntime;
+    QLabel *lblRuntimeStatus;
+    QWidget *gpuSettingsContainer; // GPU 设置子容器
 };
 
 void InitGlobalConfig();

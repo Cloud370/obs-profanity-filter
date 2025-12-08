@@ -1,0 +1,17 @@
+{
+  "runtimes": [
+    {
+      "id": "cuda",
+      "name": "CUDA 12.x (NVIDIA GPU)",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-win-x64-gpu-1.17.3.zip",
+      "version": "1.17.3",
+      "cuda_version": "12.x",
+      "files": [
+        "onnxruntime.dll",
+        "onnxruntime_providers_cuda.dll",
+        "onnxruntime_providers_shared.dll"
+      ],
+      "sha256": ""
+    }
+  ]
+}

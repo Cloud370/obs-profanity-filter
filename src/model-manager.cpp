@@ -5,32 +5,19 @@
 #include <QJsonArray>
 #include <QDir>
 #include <QDirIterator>
-#include <QStandardPaths>
 #include <obs-module.h>
 #include <obs.h>
-#include "unzip.h"
-#ifdef _WIN32
-#include "iowin32.h"
-#endif
-#include <curl/curl.h>
 
-PluginModelManager::PluginModelManager(QObject *parent) : QObject(parent) {
-    // Curl global init is usually not needed if we just use easy interface carefully, 
-    // but good practice to do it once in main. 
-    // However, for a plugin, we might not want to mess with global state too much.
-    // curl_global_init(CURL_GLOBAL_ALL); // calling this is not thread safe, so maybe skip or do in plugin load
+PluginModelManager::PluginModelManager(QObject *parent) : FileDownloader(parent) {
 }
 
 PluginModelManager::~PluginModelManager() {
-    CancelDownload();
-    if (downloadThread.joinable()) {
-        downloadThread.join();
-    }
+    // 基类析构函数会处理取消下载和线程清理
 }
 
 void PluginModelManager::LoadModels(const QString &jsonPath) {
     models.clear();
-    
+
     BLOG(LOG_INFO, "Loading models from: %s", jsonPath.toStdString().c_str());
 
     if (!jsonPath.isEmpty()) {
@@ -38,7 +25,7 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
         if (file.open(QIODevice::ReadOnly)) {
             QByteArray data = file.readAll();
             QJsonDocument doc = QJsonDocument::fromJson(data);
-            
+
             if (doc.isObject()) {
                 QJsonArray arr = doc.object()["models"].toArray();
                 BLOG(LOG_INFO, "Found %lld models in JSON", arr.count());
@@ -93,7 +80,7 @@ void PluginModelManager::LoadModels(const QString &jsonPath) {
             }
         };
     }
-    
+
     BLOG(LOG_INFO, "Total models loaded: %zu", models.size());
 }
 
@@ -105,17 +92,17 @@ QString PluginModelManager::GetModelPath(const QString &modelId) const {
     // We store models in the plugin config directory under "models" subdirectory
     char *path = obs_module_get_config_path(obs_current_module(), "models");
     if (!path) return QString();
-    
+
     QString qpath = QString::fromUtf8(path);
     bfree(path);
-    
+
     return QDir(qpath).filePath(modelId);
 }
 
 bool PluginModelManager::IsModelInstalled(const QString &modelId) const {
     QString path = GetModelPath(modelId);
     if (path.isEmpty()) return false;
-    
+
     // Check if directory exists and is not empty
     QDir dir(path);
     return dir.exists() && !dir.isEmpty();
@@ -124,7 +111,7 @@ bool PluginModelManager::IsModelInstalled(const QString &modelId) const {
 bool PluginModelManager::DeleteModel(const QString &modelId) {
     QString path = GetModelPath(modelId);
     if (path.isEmpty()) return false;
-    
+
     QDir dir(path);
     if (dir.exists()) {
         BLOG(LOG_INFO, "Deleting model: %s", path.toStdString().c_str());
@@ -134,13 +121,13 @@ bool PluginModelManager::DeleteModel(const QString &modelId) {
 }
 
 void PluginModelManager::DownloadModel(const QString &modelId) {
-    if (isDownloading) {
-        // Already downloading
+    if (IsDownloading()) {
+        emit downloadError("另一个下载正在进行中");
         return;
     }
-    
+
     currentDownloadId = modelId;
-    
+
     // Find url
     QString url;
     for (const auto &m : models) {
@@ -149,326 +136,119 @@ void PluginModelManager::DownloadModel(const QString &modelId) {
             break;
         }
     }
-    
+
     if (url.isEmpty()) {
-        emit downloadError("Model not found in configuration.");
+        emit downloadError("在配置中找不到此模型");
         return;
     }
-    
+
     // Prepare destination
     char *base_path_c = obs_module_get_config_path(obs_current_module(), "models");
     QString basePath = QString::fromUtf8(base_path_c);
     bfree(base_path_c);
-    
+
     QDir dir(basePath);
     if (!dir.exists()) {
         dir.mkpath(".");
     }
-    
+
     // Temp file
     QString fileName = url.split('/').last();
     downloadDestPath = dir.filePath(fileName);
-    
-    // Reset flags
-    cancelRequested = false;
-    isDownloading = true;
 
-    // Start thread
-    // Join previous if needed (shouldn't happen if isDownloading check works, but safe to check)
-    if (downloadThread.joinable()) {
-        downloadThread.join();
-    }
-    
-    downloadThread = std::thread(&PluginModelManager::DownloadWorker, this, url, downloadDestPath);
+    // 使用基类的下载功能
+    StartDownload(url, downloadDestPath, modelId);
 }
 
-void PluginModelManager::CancelDownload() {
-    if (isDownloading) {
-        cancelRequested = true;
+bool PluginModelManager::OnDownloadComplete(const QString &downloadId, const QString &destPath) {
+    // Extract to a temporary directory to handle various zip structures
+    char *base_path_c = obs_module_get_config_path(obs_current_module(), "models");
+    QString basePath = QString::fromUtf8(base_path_c);
+    bfree(base_path_c);
+
+    QString tempExtractPath = QDir(basePath).filePath(downloadId + "_temp");
+    QDir tempDir(tempExtractPath);
+    if (tempDir.exists()) {
+        tempDir.removeRecursively();
     }
-}
+    tempDir.mkpath(".");
 
-size_t PluginModelManager::WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
-    QFile *file = static_cast<QFile*>(userp);
-    if (!file || !file->isOpen()) return 0;
-    
-    qint64 bytesWritten = file->write(static_cast<const char*>(contents), size * nmemb);
-    return (size_t)bytesWritten;
-}
+    BLOG(LOG_INFO, "Extracting to temporary directory: %s", tempExtractPath.toStdString().c_str());
 
-int PluginModelManager::ProgressCallback(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
-    PluginModelManager *manager = static_cast<PluginModelManager*>(clientp);
-    
-    if (manager->cancelRequested) {
-        return 1; // Abort
-    }
-    
-    if (dltotal > 0) {
-        emit manager->downloadProgress((qint64)dlnow, (qint64)dltotal);
-    }
-    
-    return 0;
-}
+    bool success = ExtractArchive(destPath, tempExtractPath, &GetCancelFlag());
+    QFile::remove(destPath); // Remove zip file
 
-void PluginModelManager::DownloadWorker(QString url, QString destPath) {
-    CURL *curl;
-    CURLcode res;
-    
-    QFile file(destPath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        emit downloadError("Could not open file for writing: " + destPath);
-        isDownloading = false;
-        return;
-    }
-
-    curl = curl_easy_init();
-    if (curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url.toStdString().c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
-        
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, ProgressCallback);
-        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        
-        // SSL options
-        // On Windows with Schannel, this should use system certs
-        // We set NATIVE_CA to be sure
-        curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
-        
-        // Follow redirects
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        
-        // Fail on error
-        curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-        
-        // User Agent
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "OBS-Profanity-Filter-Plugin/1.0");
-
-        res = curl_easy_perform(curl);
-        
-        // Clean up curl
-        curl_easy_cleanup(curl);
-        
-        // Close file
-        file.close();
-
-        if (res == CURLE_OK) {
-             // Extract to a temporary directory to handle various zip structures
-             char *base_path_c = obs_module_get_config_path(obs_current_module(), "models");
-             QString basePath = QString::fromUtf8(base_path_c);
-             bfree(base_path_c);
-             
-             QString tempExtractPath = QDir(basePath).filePath(currentDownloadId + "_temp");
-             QDir tempDir(tempExtractPath);
-             if (tempDir.exists()) {
-                 tempDir.removeRecursively();
-             }
-             tempDir.mkpath(".");
-
-             BLOG(LOG_INFO, "Extracting to temporary directory: %s", tempExtractPath.toStdString().c_str());
-             
-             bool success = ExtractArchive(destPath, tempExtractPath, &cancelRequested);
-             QFile::remove(destPath); // Remove zip file
-             
-             if (success) {
-                 if (cancelRequested) {
-                     BLOG(LOG_INFO, "Download cancelled during extraction.");
-                     tempDir.removeRecursively();
-                     return;
-                 }
-
-                 // Logic to find the actual model root (where tokens.txt is)
-                 QString modelRootPath;
-                 bool found = false;
-
-                 // Search recursively for tokens.txt to find the model root directory
-                 QDirIterator it(tempExtractPath, QDirIterator::Subdirectories);
-                 while (it.hasNext()) {
-                     QString filePath = it.next();
-                     if (QFileInfo(filePath).fileName() == "tokens.txt") {
-                         modelRootPath = QFileInfo(filePath).absolutePath();
-                         found = true;
-                         break;
-                     }
-                 }
-
-                 if (found) {
-                     QString finalModelPath = GetModelPath(currentDownloadId);
-                     QDir finalDir(finalModelPath);
-                     if (finalDir.exists()) {
-                         finalDir.removeRecursively();
-                     }
-
-                     // Rename/Move the found root to the final destination
-                     // QDir::rename can move directories
-                     // Note: Rename fails if destination exists, so we removed it above.
-                     // Also rename might fail across partitions, but here we are likely in same config dir.
-                     if (QDir().rename(modelRootPath, finalModelPath)) {
-                         BLOG(LOG_INFO, "Model installed to: %s", finalModelPath.toStdString().c_str());
-                         emit downloadFinished(currentDownloadId);
-                         
-                         // Clean up temp dir if we moved a subdirectory out of it
-                         // If modelRootPath == tempExtractPath, rename moved the whole dir, so tempExtractPath is already gone/invalid
-                         if (modelRootPath != tempExtractPath) {
-                             tempDir.removeRecursively();
-                         }
-                     } else {
-                         // Fallback copy if rename fails
-                         BLOG(LOG_WARNING, "Rename failed, trying copy...");
-                         // Implementing directory copy is tedious in Qt/C++ without helpers. 
-                         // But usually rename works within same drive.
-                         // Let's just emit error for now or try to be more robust later if needed.
-                         tempDir.removeRecursively(); // Cleanup temp files
-                         emit downloadError("Failed to move model to final destination.");
-                     }
-                 } else {
-                     BLOG(LOG_ERROR, "tokens.txt not found in extracted files.");
-                     // List files for debugging
-                     QDirIterator it(tempExtractPath, QDirIterator::Subdirectories);
-                     while (it.hasNext()) {
-                         BLOG(LOG_INFO, "Found file: %s", it.next().toStdString().c_str());
-                     }
-                     tempDir.removeRecursively(); // Cleanup temp files
-                     emit downloadError("Extraction completed but tokens.txt is missing (invalid model structure).");
-                 }
-             } else {
-                 tempDir.removeRecursively(); // Cleanup temp files
-                 if (cancelRequested) {
-                     BLOG(LOG_INFO, "Download cancelled during extraction.");
-                 } else {
-                     emit downloadError("Failed to extract archive.");
-                 }
-             }
+    if (!success) {
+        tempDir.removeRecursively();
+        if (GetCancelFlag().load()) {
+            BLOG(LOG_INFO, "Download cancelled during extraction.");
         } else {
-            if (cancelRequested) {
-                // User cancelled
-                BLOG(LOG_INFO, "Download cancelled by user.");
-            } else {
-                QString errorMsg = QString("Download failed: %1").arg(curl_easy_strerror(res));
-                emit downloadError(errorMsg);
-            }
-            QFile::remove(destPath);
+            emit downloadError("解压文件失败");
         }
-    } else {
-        emit downloadError("Failed to initialize CURL.");
-    }
-    
-    isDownloading = false;
-}
-
-bool PluginModelManager::ExtractArchive(const QString &archivePath, const QString &destDir, std::atomic<bool> *cancelFlag) {
-    unzFile zipfile = nullptr;
-#ifdef _WIN32
-    zlib_filefunc64_def ffunc;
-    fill_win32_filefunc64W(&ffunc);
-    zipfile = unzOpen2_64(archivePath.toStdWString().c_str(), &ffunc);
-#else
-    zipfile = unzOpen(archivePath.toStdString().c_str());
-#endif
-
-    if (!zipfile) {
-        BLOG(LOG_ERROR, "Cannot open zip file: %s", archivePath.toStdString().c_str());
         return false;
     }
 
-    unz_global_info global_info;
-    if (unzGetGlobalInfo(zipfile, &global_info) != UNZ_OK) {
-        BLOG(LOG_ERROR, "Could not read zip global info");
-        unzClose(zipfile);
+    if (GetCancelFlag().load()) {
+        BLOG(LOG_INFO, "Download cancelled during extraction.");
+        tempDir.removeRecursively();
         return false;
     }
 
-    char read_buffer[8192];
-
-    for (uLong i = 0; i < global_info.number_entry; ++i) {
-        if (cancelFlag && *cancelFlag) {
-            unzClose(zipfile);
-            return false;
-        }
-
-        unz_file_info file_info;
-        char filename[1024];
-        if (unzGetCurrentFileInfo(zipfile, &file_info, filename, sizeof(filename), NULL, 0, NULL, 0) != UNZ_OK) {
-            BLOG(LOG_ERROR, "Could not read zip file info");
-            unzClose(zipfile);
-            return false;
-        }
-
-        QString currentFileName;
-        // Check if filename is utf8 (flag bit 11)
-        if (file_info.flag & (1 << 11)) {
-            currentFileName = QString::fromUtf8(filename);
-        } else {
-            currentFileName = QString::fromLocal8Bit(filename);
-        }
-
-        BLOG(LOG_INFO, "Extracting: %s", currentFileName.toStdString().c_str());
-
-        QString fullPath = QDir(destDir).filePath(currentFileName);
-        
-        // Check if it is a directory
-        bool isDir = false;
-        if (currentFileName.endsWith('/') || currentFileName.endsWith('\\')) {
-            isDir = true;
-        }
-
-        if (isDir) {
-            QDir dir(fullPath);
-            if (!dir.exists()) {
-                dir.mkpath(".");
-            }
-        } else {
-            // It is a file
-            if (unzOpenCurrentFile(zipfile) != UNZ_OK) {
-                BLOG(LOG_ERROR, "Could not open file in zip: %s", filename);
-                unzClose(zipfile);
-                return false;
-            }
-
-            // Ensure directory exists
-            QFileInfo fileInfo(fullPath);
-            QDir dir = fileInfo.dir();
-            if (!dir.exists()) {
-                dir.mkpath(".");
-            }
-
-            QFile outFile(fullPath);
-            if (!outFile.open(QIODevice::WriteOnly)) {
-                BLOG(LOG_ERROR, "Could not open destination file: %s", fullPath.toStdString().c_str());
-                unzCloseCurrentFile(zipfile);
-                unzClose(zipfile);
-                return false;
-            }
-
-            int error = UNZ_OK;
-            do {
-                error = unzReadCurrentFile(zipfile, read_buffer, sizeof(read_buffer));
-                if (error < 0) {
-                    BLOG(LOG_ERROR, "Error reading zip content");
-                    outFile.close();
-                    unzCloseCurrentFile(zipfile);
-                    unzClose(zipfile);
-                    return false;
-                }
-                if (error > 0) {
-                    outFile.write(read_buffer, error);
-                }
-            } while (error > 0);
-
-            outFile.close();
-            unzCloseCurrentFile(zipfile);
-        }
-
-        if ((i + 1) < global_info.number_entry) {
-            if (unzGoToNextFile(zipfile) != UNZ_OK) {
-                BLOG(LOG_ERROR, "Could not read next file in zip");
-                unzClose(zipfile);
-                return false;
-            }
-        }
+    // Finalize installation
+    if (!FinalizeModelInstallation(downloadId, tempExtractPath)) {
+        tempDir.removeRecursively();
+        return false;
     }
 
-    unzClose(zipfile);
     return true;
+}
+
+bool PluginModelManager::FinalizeModelInstallation(const QString &modelId, const QString &tempExtractPath) {
+    // Logic to find the actual model root (where tokens.txt is)
+    QString modelRootPath;
+    bool found = false;
+
+    // Search recursively for tokens.txt to find the model root directory
+    QDirIterator it(tempExtractPath, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QString filePath = it.next();
+        if (QFileInfo(filePath).fileName() == "tokens.txt") {
+            modelRootPath = QFileInfo(filePath).absolutePath();
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) {
+        BLOG(LOG_ERROR, "tokens.txt not found in extracted files.");
+        // List files for debugging
+        QDirIterator debugIt(tempExtractPath, QDirIterator::Subdirectories);
+        while (debugIt.hasNext()) {
+            BLOG(LOG_INFO, "Found file: %s", debugIt.next().toStdString().c_str());
+        }
+        emit downloadError("解压完成但 tokens.txt 缺失 (无效的模型结构)");
+        return false;
+    }
+
+    QString finalModelPath = GetModelPath(modelId);
+    QDir finalDir(finalModelPath);
+    if (finalDir.exists()) {
+        finalDir.removeRecursively();
+    }
+
+    // Rename/Move the found root to the final destination
+    if (QDir().rename(modelRootPath, finalModelPath)) {
+        BLOG(LOG_INFO, "Model installed to: %s", finalModelPath.toStdString().c_str());
+
+        // Clean up temp dir if we moved a subdirectory out of it
+        QDir tempDir(tempExtractPath);
+        if (modelRootPath != tempExtractPath) {
+            tempDir.removeRecursively();
+        }
+        return true;
+    } else {
+        BLOG(LOG_WARNING, "Rename failed, model installation incomplete.");
+        emit downloadError("无法将模型移动到最终目录");
+        return false;
+    }
 }

@@ -23,6 +23,7 @@ public:
     // Global Cache
     std::string target_model_path;
     std::string loaded_model_path;
+    std::string loaded_provider;  // Provider used for currently loaded model
     double cached_delay = 1.5;
     
     // History

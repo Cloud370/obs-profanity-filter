@@ -62,10 +62,10 @@ void GlobalConfig::Save() {
     obs_data_t *data = obs_data_create();
     string path_to_save;
     string custom_words_path;
-    
+
     {
         lock_guard<std::mutex> lock(this->mutex);
-        
+
         obs_data_set_bool(data, "global_enable", global_enable);
         obs_data_set_string(data, "model_path", model_path.c_str());
         obs_data_set_int(data, "model_offset_ms", model_offset_ms);
@@ -78,7 +78,12 @@ void GlobalConfig::Save() {
         obs_data_set_int(data, "beep_mix", beep_mix_percent);
         obs_data_set_bool(data, "enable_agc", enable_agc);
         obs_data_set_bool(data, "video_delay_enabled", video_delay_enabled);
-        
+
+        // GPU Settings
+        obs_data_set_bool(data, "enable_gpu", enable_gpu);
+        obs_data_set_string(data, "onnx_provider", onnx_provider.c_str());
+        obs_data_set_int(data, "cuda_device_id", cuda_device_id);
+
         ParsePatterns();
     }
     
@@ -253,6 +258,18 @@ void GlobalConfig::Load() {
 
         if (obs_data_has_user_value(data, "video_delay_enabled")) {
             video_delay_enabled = obs_data_get_bool(data, "video_delay_enabled");
+        }
+
+        // GPU Settings
+        if (obs_data_has_user_value(data, "enable_gpu")) {
+            enable_gpu = obs_data_get_bool(data, "enable_gpu");
+        }
+        if (obs_data_has_user_value(data, "onnx_provider")) {
+            const char* provider = obs_data_get_string(data, "onnx_provider");
+            onnx_provider = provider ? provider : "cpu";
+        }
+        if (obs_data_has_user_value(data, "cuda_device_id")) {
+            cuda_device_id = (int)obs_data_get_int(data, "cuda_device_id");
         }
 
         obs_data_release(data);
@@ -445,6 +462,91 @@ ConfigDialog::ConfigDialog(QWidget *parent) : QDialog(parent) {
     layoutWords->addWidget(chkComedyMode);
 
     containerLayout->addWidget(grpWords);
+
+    // GPU Acceleration Group
+    QGroupBox *grpGpu = new QGroupBox("GPU 加速设置 (实验性)");
+    QFormLayout *layoutGpu = new QFormLayout(grpGpu);
+
+    // Init Runtime Manager
+    runtimeManager = RuntimeManager::Get();
+    if (!runtimeManager) {
+        RuntimeManager::Initialize();
+        runtimeManager = RuntimeManager::Get();
+    }
+    QString runtimeJsonPath;
+    if (g_module) {
+        char *runtimePath = obs_find_module_file(g_module, "runtime.json");
+        if (runtimePath) {
+            runtimeJsonPath = QString::fromUtf8(runtimePath);
+            bfree(runtimePath);
+        }
+    }
+    if (runtimeManager) {
+        runtimeManager->LoadConfig(runtimeJsonPath);
+        connect(runtimeManager, &RuntimeManager::downloadProgress, this, &ConfigDialog::onRuntimeDownloadProgress);
+        connect(runtimeManager, &RuntimeManager::downloadFinished, this, &ConfigDialog::onRuntimeDownloadFinished);
+        connect(runtimeManager, &RuntimeManager::downloadError, this, &ConfigDialog::onRuntimeDownloadError);
+    }
+
+    chkEnableGpu = new QCheckBox("启用 GPU 加速");
+    chkEnableGpu->setToolTip("启用后将使用 GPU 进行语音识别推理，可显著提升性能。\n需要下载对应的 Runtime 文件。");
+    layoutGpu->addRow(chkEnableGpu);
+
+    // GPU Settings Container (显示/隐藏根据 chkEnableGpu)
+    gpuSettingsContainer = new QWidget();
+    QFormLayout *layoutGpuSettings = new QFormLayout(gpuSettingsContainer);
+    layoutGpuSettings->setContentsMargins(0, 0, 0, 0);
+
+    comboProvider = new QComboBox();
+    comboProvider->addItem("CPU (默认)", "cpu");
+    comboProvider->addItem("CUDA (NVIDIA GPU)", "cuda");
+    connect(comboProvider, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        updateGpuStatus();
+    });
+    layoutGpuSettings->addRow("执行提供者:", comboProvider);
+
+    comboGpuDevice = new QComboBox();
+    // 检测 GPU
+    QStringList gpuNames = RuntimeManager::GetGpuNames();
+    if (gpuNames.isEmpty()) {
+        comboGpuDevice->addItem("未检测到 NVIDIA GPU", 0);
+        comboGpuDevice->setEnabled(false);
+    } else {
+        for (int i = 0; i < gpuNames.size(); i++) {
+            comboGpuDevice->addItem(QString("GPU %1: %2").arg(i).arg(gpuNames[i]), i);
+        }
+    }
+    layoutGpuSettings->addRow("CUDA 设备:", comboGpuDevice);
+
+    lblGpuStatus = new QLabel("状态: 检查中...");
+    QFont gpuStatusFont = lblGpuStatus->font();
+    gpuStatusFont.setBold(true);
+    lblGpuStatus->setFont(gpuStatusFont);
+    layoutGpuSettings->addRow("Runtime 状态:", lblGpuStatus);
+
+    QHBoxLayout *boxRuntime = new QHBoxLayout();
+    btnRuntimeAction = new QPushButton("⬇️ 下载 CUDA Runtime");
+    connect(btnRuntimeAction, &QPushButton::clicked, this, &ConfigDialog::onRuntimeAction);
+    progressRuntime = new QProgressBar();
+    progressRuntime->setRange(0, 100);
+    progressRuntime->setValue(0);
+    progressRuntime->setVisible(false);
+    lblRuntimeStatus = new QLabel("");
+
+    boxRuntime->addWidget(btnRuntimeAction);
+    boxRuntime->addWidget(progressRuntime);
+    boxRuntime->addWidget(lblRuntimeStatus);
+    boxRuntime->addStretch();
+
+    layoutGpuSettings->addRow("", boxRuntime);
+
+    layoutGpu->addRow(gpuSettingsContainer);
+
+    // 连接 GPU 开关
+    connect(chkEnableGpu, &QCheckBox::toggled, this, &ConfigDialog::onGpuEnableChanged);
+    gpuSettingsContainer->setVisible(false); // 默认隐藏
+
+    containerLayout->addWidget(grpGpu);
     
     // Add container to main layout
     mainLayout->addWidget(settingsContainer);
@@ -540,7 +642,22 @@ void ConfigDialog::LoadToUI() {
     else comboEffect->setCurrentIndex(0); // Default to Beep
 
     chkEnableVideoDelay->setChecked(cfg->video_delay_enabled);
-    
+
+    // GPU Settings
+    chkEnableGpu->setChecked(cfg->enable_gpu);
+    gpuSettingsContainer->setVisible(cfg->enable_gpu);
+
+    int providerIdx = comboProvider->findData(QString::fromStdString(cfg->onnx_provider));
+    if (providerIdx != -1) comboProvider->setCurrentIndex(providerIdx);
+    else comboProvider->setCurrentIndex(0); // Default to CPU
+
+    if (cfg->cuda_device_id < comboGpuDevice->count()) {
+        comboGpuDevice->setCurrentIndex(cfg->cuda_device_id);
+    }
+
+    // Update GPU status
+    updateGpuStatus();
+
     // Trigger update of download button state
     onModelComboChanged(comboModel->currentIndex());
 }
@@ -754,10 +871,15 @@ void ConfigDialog::onApply() {
         cfg->audio_effect = comboEffect->currentData().toInt();
 
         cfg->video_delay_enabled = chkEnableVideoDelay->isChecked();
+
+        // GPU Settings
+        cfg->enable_gpu = chkEnableGpu->isChecked();
+        cfg->onnx_provider = comboProvider->currentData().toString().toStdString();
+        cfg->cuda_device_id = comboGpuDevice->currentData().toInt();
     }
-    
+
     cfg->Save();
-    
+
     // Apply state change ONLY if switch toggled
     if (old_enabled_state != cfg->video_delay_enabled) {
         UpdateVideoDelayFiltersState();
@@ -767,6 +889,127 @@ void ConfigDialog::onApply() {
 void ConfigDialog::onSave() {
     onApply();
     accept();
+}
+
+// --- GPU Runtime Slots ---
+
+void ConfigDialog::onGpuEnableChanged(bool enabled) {
+    gpuSettingsContainer->setVisible(enabled);
+    updateGpuStatus();
+}
+
+void ConfigDialog::updateGpuStatus() {
+    if (!runtimeManager) {
+        lblGpuStatus->setText("⚠️ Runtime Manager 未初始化");
+        lblGpuStatus->setStyleSheet("color: #E6A23C;");
+        btnRuntimeAction->setEnabled(false);
+        return;
+    }
+
+    QString provider = comboProvider->currentData().toString();
+
+    if (provider == "cpu") {
+        lblGpuStatus->setText("✅ CPU 模式无需额外组件");
+        lblGpuStatus->setStyleSheet("color: #67C23A;");
+        btnRuntimeAction->setVisible(false);
+        progressRuntime->setVisible(false);
+        lblRuntimeStatus->setVisible(false);
+        return;
+    }
+
+    // CUDA mode
+    btnRuntimeAction->setVisible(true);
+    lblRuntimeStatus->setVisible(true);
+
+    if (runtimeManager->IsRuntimeInstalled("cuda")) {
+        lblGpuStatus->setText("✅ CUDA Runtime 已就绪");
+        lblGpuStatus->setStyleSheet("color: #67C23A;");
+        btnRuntimeAction->setText("🗑️ 删除 CUDA Runtime");
+        btnRuntimeAction->setEnabled(true);
+        lblRuntimeStatus->setText("已安装");
+    } else {
+        // 检查是否配置了下载 URL
+        const auto &runtimes = runtimeManager->GetRuntimes();
+        bool hasUrl = false;
+        for (const auto &r : runtimes) {
+            if (r.id == "cuda" && !r.url.isEmpty()) {
+                hasUrl = true;
+                break;
+            }
+        }
+
+        if (hasUrl) {
+            lblGpuStatus->setText("⚠️ 需要下载 CUDA Runtime");
+            lblGpuStatus->setStyleSheet("color: #E6A23C;");
+            btnRuntimeAction->setText("⬇️ 下载 CUDA Runtime");
+            btnRuntimeAction->setEnabled(true);
+            lblRuntimeStatus->setText("未安装");
+        } else {
+            lblGpuStatus->setText("❌ 未配置 CUDA Runtime 下载地址");
+            lblGpuStatus->setStyleSheet("color: #F56C6C;");
+            btnRuntimeAction->setText("⬇️ 下载 CUDA Runtime");
+            btnRuntimeAction->setEnabled(false);
+            lblRuntimeStatus->setText("请在 runtime.json 中配置下载地址");
+        }
+    }
+}
+
+void ConfigDialog::onRuntimeAction() {
+    if (!runtimeManager) return;
+
+    QString provider = comboProvider->currentData().toString();
+    if (provider != "cuda") return;
+
+    if (runtimeManager->IsRuntimeInstalled("cuda")) {
+        // Delete
+        QMessageBox::StandardButton reply = QMessageBox::question(this, "确认删除",
+            "确定要删除 CUDA Runtime 吗?\n删除后需要重新下载才能使用 GPU 加速。",
+            QMessageBox::Yes | QMessageBox::No);
+
+        if (reply == QMessageBox::Yes) {
+            if (runtimeManager->DeleteRuntime("cuda")) {
+                updateGpuStatus();
+            } else {
+                QMessageBox::critical(this, "删除失败", "无法删除 CUDA Runtime，可能文件正在被使用。");
+            }
+        }
+    } else {
+        // Download
+        btnRuntimeAction->setEnabled(false);
+        progressRuntime->setValue(0);
+        progressRuntime->setVisible(true);
+        lblRuntimeStatus->setText("准备下载...");
+
+        runtimeManager->DownloadRuntime("cuda");
+    }
+}
+
+void ConfigDialog::onRuntimeDownloadProgress(qint64 received, qint64 total) {
+    if (total > 0) {
+        int percent = (int)((received * 100) / total);
+        progressRuntime->setValue(percent);
+        double mbReceived = received / (1024.0 * 1024.0);
+        double mbTotal = total / (1024.0 * 1024.0);
+        lblRuntimeStatus->setText(QString("正在下载: %1 MB / %2 MB").arg(mbReceived, 0, 'f', 1).arg(mbTotal, 0, 'f', 1));
+    } else {
+        progressRuntime->setValue(0);
+        lblRuntimeStatus->setText("正在下载...");
+    }
+}
+
+void ConfigDialog::onRuntimeDownloadFinished(const QString &runtimeId) {
+    (void)runtimeId;
+    progressRuntime->setVisible(false);
+    lblRuntimeStatus->setText("✅ 下载并解压完成!");
+    updateGpuStatus();
+    QMessageBox::information(this, "下载完成", "CUDA Runtime 已成功下载并安装。");
+}
+
+void ConfigDialog::onRuntimeDownloadError(const QString &msg) {
+    progressRuntime->setVisible(false);
+    lblRuntimeStatus->setText("❌ 下载失败");
+    btnRuntimeAction->setEnabled(true);
+    QMessageBox::critical(this, "下载失败", "错误信息: " + msg);
 }
 
 void InitGlobalConfig() {
