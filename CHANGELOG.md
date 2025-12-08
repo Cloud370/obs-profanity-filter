@@ -1,5 +1,25 @@
 # 更新日志 (Changelog)
 
+## v0.3.0-beta.1 (2025-12-08)
+- **功能新增**:
+  - **GPU 加速**: 添加 CUDA GPU 加速支持 (实验性)，可显著提升语音识别性能。
+  - **一键下载**: 支持一键下载 ONNX Runtime CUDA DLL（国内镜像源）。
+  - **GPU 检测**: 自动检测 NVIDIA GPU 和系统 CUDA 版本。
+  - **热切换**: 支持 CPU/CUDA 模式热切换，无需重启 OBS。
+- **架构重构**:
+  - 新增 `FileDownloader` 通用下载器基类，统一下载逻辑。
+  - 新增 `RuntimeManager` GPU Runtime DLL 管理器。
+  - `PluginModelManager` 继承 `FileDownloader`，移除重复代码。
+  - `ASRModel` 支持 provider 参数，模型缓存键扩展为 (path + provider)。
+  - `profanity-filter` 检测 provider 变化自动重载模型。
+- **新增文件**:
+  - `src/file-downloader.hpp/cpp` - 通用下载器基类
+  - `src/runtime-manager.hpp/cpp` - GPU Runtime 管理器
+  - `data/runtime.json` - CUDA Runtime 配置
+- **注意事项**:
+  - 需要 NVIDIA 显卡和 CUDA 12.x 支持
+  - 这是测试版本，如遇问题请反馈
+
 ## v0.2.0 (2025-12-07)
 - **功能新增**:
   - **音频处理**: 添加自动增益控制 (AGC) 功能，保持音量稳定。
